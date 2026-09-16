@@ -1,0 +1,313 @@
+#!/usr/bin/env node
+
+import { loadConfig } from '../src/config.mjs'
+import { killRun, runDelegateTask } from '../src/delegate.mjs'
+import { renderDigest, renderStatus } from '../src/digest.mjs'
+import { defaultActiveRuns, RunsLedger } from '../src/ledger.mjs'
+import { listLiveRecords } from '../src/live.mjs'
+import { renderTeamDigest, runTeamTasks } from '../src/team.mjs'
+
+const config = loadConfig()
+const ledger = new RunsLedger(config.ledgerPath, config)
+
+const TOOLS = [
+  {
+    name: 'wolf_delegate',
+    description: '把一件自洽、可机械验收的活交给 agy（Antigravity CLI）执行，并把实测证据带回。注意：agy 看不到本会话，task 必须完整独立。同一个 task_id 的多轮会续用 agy 会话；换不相关的事必须换 task_id。同一个 task_id 不允许并发。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: '任务稳定标识（如 fix-build、add-test）' },
+        task: { type: 'string', description: '完整独立任务书：目标、交付物、以及怎样算完成。agy 看不到本会话，task 必须完整独立。' },
+        verify: { type: 'array', items: { type: 'string' }, description: '验收命令列表（在工作目录执行，如 npm test）' },
+        verify_baseline: { type: 'array', items: { type: 'string' }, description: '派活前必须失败的基线检查命令。已有命令通过则直接判 stale 且不启动 agy。' },
+        fresh: { type: 'boolean', description: '是否强制冷启动、丢弃上一轮会话' },
+        model: { type: 'string', description: '覆盖本次运行的模型（如 claude-opus-4-6-thinking）' },
+      },
+      required: ['task_id', 'task'],
+    },
+  },
+  {
+    name: 'wolf_status',
+    description: '只读台账，回答「我派过哪些活、各自到哪了」。注意：纯只读，绝不启动 agy、不跑验收、不消耗配额。给出轮数、最后 verdict、最后 stop_reason、累计 token 与 conversation_id 状态。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: '可选：只查看此特定 task_id' },
+        limit: { type: 'integer', description: '最多列出多少个任务（默认 20，上限 100）' },
+      },
+    },
+  },
+  {
+    name: 'wolf_kill',
+    description: '终止指定 task_id 正在运行的工人进程树。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: '要终止的任务 task_id' },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'wolf_team',
+    description: '一次调用受控并发派多个持久 agy 工人，并返回有界的汇总。注意：agy 看不到本会话，task 必须完整独立。多个任务必须互相独立，同一个调用内严禁重复 task_id。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tasks: {
+          type: 'array',
+          description: '并发委派任务列表（1 到 8 个）',
+          items: {
+            type: 'object',
+            properties: {
+              task_id: { type: 'string', description: '任务稳定标识' },
+              task: { type: 'string', description: '完整独立任务书。agy 看不到本会话，task 必须完整独立。' },
+              verify: { type: 'array', items: { type: 'string' }, description: '验收命令列表' },
+              verify_baseline: { type: 'array', items: { type: 'string' }, description: '基线命令列表' },
+              fresh: { type: 'boolean', description: '是否强制冷启动' },
+              model: { type: 'string', description: '覆盖模型' },
+            },
+            required: ['task_id', 'task'],
+          },
+        },
+        concurrency: {
+          type: 'integer',
+          description: '最大并发任务数（1 到 4，默认 2）',
+        },
+      },
+      required: ['tasks'],
+    },
+  },
+]
+
+function sendJsonRpc(msg) {
+  process.stdout.write(JSON.stringify(msg) + '\n')
+}
+
+function sendResponse(id, result) {
+  sendJsonRpc({
+    jsonrpc: '2.0',
+    id,
+    result,
+  })
+}
+
+function sendError(id, code, message, data) {
+  sendJsonRpc({
+    jsonrpc: '2.0',
+    id,
+    error: {
+      code,
+      message,
+      ...(data !== undefined ? { data } : {}),
+    },
+  })
+}
+
+async function handleRequest(req) {
+  const { id, method, params } = req
+
+  if (method === 'initialize') {
+    return sendResponse(id, {
+      protocolVersion: '2024-11-05',
+      capabilities: {
+        tools: {},
+      },
+      serverInfo: {
+        name: 'wolfpack-codex',
+        version: '1.0.0',
+      },
+    })
+  }
+
+  if (method === 'notifications/initialized' || method === 'initialized') {
+    // 客户端通知，无需响应
+    return
+  }
+
+  if (method === 'ping') {
+    return sendResponse(id, {})
+  }
+
+  if (method === 'tools/list') {
+    return sendResponse(id, {
+      tools: TOOLS,
+    })
+  }
+
+  if (method === 'tools/call') {
+    const toolName = params?.name
+    const toolArgs = params?.arguments || {}
+
+    try {
+      if (toolName === 'wolf_delegate') {
+        const res = await runDelegateTask({
+          config,
+          args: toolArgs,
+          cwd: process.cwd(),
+          ledger,
+        })
+        const digest = renderDigest(res)
+        const isError = res.verdict === 'fail' || res.verdict === 'error'
+        return sendResponse(id, {
+          content: [{ type: 'text', text: digest }],
+          isError,
+          raw: res,
+        })
+      }
+
+      if (toolName === 'wolf_status') {
+        const allStates = [...(await ledger.read()).values()]
+        const activeIds = new Set(defaultActiveRuns.list().map(r => r.taskId))
+        const liveRecords = await listLiveRecords(config.rawDir)
+        for (const r of liveRecords) {
+          activeIds.add(r.taskId)
+        }
+
+        let filtered = toolArgs.task_id
+          ? allStates.filter(s => s.taskId === toolArgs.task_id)
+          : allStates
+
+        filtered.sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))
+
+        const limit = toolArgs.limit && toolArgs.limit > 0 ? Math.min(toolArgs.limit, 100) : 20
+        const truncated = filtered.length > limit
+
+        const budgetLimit = typeof config.continuationTokenBudget === 'number' && config.continuationTokenBudget > 0
+          ? config.continuationTokenBudget
+          : undefined
+
+        const displayTasks = filtered.slice(0, limit).map(s => {
+          const used = s.totalTokens || 0
+          return {
+            task_id: s.taskId,
+            round: s.round,
+            last_verdict: s.lastVerdict,
+            last_stop_reason: s.lastStopReason,
+            total_tokens: s.totalTokens,
+            total_cache_read_tokens: s.totalCacheReadTokens,
+            has_conversation_id: typeof s.conversationId === 'string' && s.conversationId !== '',
+            running: activeIds.has(s.taskId),
+            changed_files_count: s.changedFiles.length,
+            changed_files: s.changedFiles.slice(0, 5),
+            changed_files_determined: s.changedFilesDetermined === true,
+            last_at: s.lastAt,
+            last_duration_ms: s.lastDurationMs,
+            budget_used: used,
+            budget_limit: budgetLimit,
+            budget_over: budgetLimit !== undefined && used >= budgetLimit,
+          }
+        })
+
+        const statusOutput = {
+          tasks: displayTasks,
+          total: filtered.length,
+          truncated,
+          limit,
+          ledger_path: ledger.filePath,
+        }
+
+        return sendResponse(id, {
+          content: [{ type: 'text', text: renderStatus(statusOutput) }],
+          raw: statusOutput,
+        })
+      }
+
+      if (toolName === 'wolf_kill') {
+        const taskId = toolArgs.task_id
+        if (!taskId) {
+          return sendResponse(id, {
+            content: [{ type: 'text', text: '缺少必填参数 task_id' }],
+            isError: true,
+          })
+        }
+        const res = await killRun(taskId, ledger, config)
+        return sendResponse(id, {
+          content: [{
+            type: 'text',
+            text: res.ok ? `任务 "${taskId}" 已成功终止 (runId: ${res.runId})` : `终止失败: ${res.reason}`,
+          }],
+          isError: !res.ok,
+        })
+      }
+
+      if (toolName === 'wolf_team') {
+        const res = await runTeamTasks({
+          config,
+          tasks: toolArgs.tasks,
+          concurrency: toolArgs.concurrency,
+          cwd: process.cwd(),
+          ledger,
+        })
+        const digest = renderTeamDigest(res)
+        const hasFailure = (res.counts?.fail || 0) > 0 || (res.counts?.error || 0) > 0
+        return sendResponse(id, {
+          content: [{ type: 'text', text: digest }],
+          isError: hasFailure,
+          raw: res,
+        })
+      }
+
+      return sendError(id, -32601, `未找到工具 "${toolName}"`)
+    } catch (err) {
+      console.error(`[wolf-mcp] 工具 "${toolName}" 执行异常:`, err)
+      return sendResponse(id, {
+        content: [{ type: 'text', text: `工具调用错误: ${err?.message || err}` }],
+        isError: true,
+      })
+    }
+  }
+
+  if (id !== undefined) {
+    return sendError(id, -32601, `未定义的方法 "${method}"`)
+  }
+}
+
+// ── 标准输入流解析（支持 NDJSON 及 Content-Length 帧传输）────────────────
+let buffer = ''
+
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+
+  while (true) {
+    // 1. Content-Length 帧头处理
+    if (buffer.startsWith('Content-Length:')) {
+      const headerEnd = buffer.indexOf('\r\n\r\n')
+      if (headerEnd === -1) break
+      const header = buffer.slice(0, headerEnd)
+      const lenMatch = header.match(/Content-Length:[ \t]*(\d+)/i)
+      if (!lenMatch) {
+        buffer = buffer.slice(headerEnd + 4)
+        continue
+      }
+      const len = parseInt(lenMatch[1], 10)
+      const totalLen = headerEnd + 4 + len
+      if (buffer.length < totalLen) break
+      const body = buffer.slice(headerEnd + 4, totalLen)
+      buffer = buffer.slice(totalLen)
+      try {
+        const req = JSON.parse(body)
+        handleRequest(req).catch(e => console.error('[wolf-mcp] 请求处理失败:', e))
+      } catch (err) {
+        console.error('[wolf-mcp] JSON 解析失败:', err)
+      }
+      continue
+    }
+
+    // 2. 按行（NDJSON）切分处理
+    const newlineIndex = buffer.indexOf('\n')
+    if (newlineIndex === -1) break
+    const line = buffer.slice(0, newlineIndex).trim()
+    buffer = buffer.slice(newlineIndex + 1)
+    if (!line) continue
+
+    try {
+      const req = JSON.parse(line)
+      handleRequest(req).catch(e => console.error('[wolf-mcp] 请求处理失败:', e))
+    } catch (err) {
+      console.error('[wolf-mcp] JSON 行解析失败:', err)
+    }
+  }
+})
