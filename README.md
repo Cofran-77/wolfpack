@@ -1,155 +1,228 @@
-# wolfpack-codex
+# Wolfpack Codex
 
-> 独立、零依赖、可移植的 Node.js ESM 项目：让 **ChatGPT 桌面端（Codex）/ Codex CLI** 当队长，通过 MCP 工具或命令行把活派给 Antigravity CLI `agy`，由代码做机械化验收。
+连接 Codex 与 Antigravity CLI（`agy`）的本地任务委派工具。
 
----
+Wolfpack 将任务派发、会话续跑、并发执行和命令验收整合到同一工作流中：Codex 负责明确目标和审查结果，agy 负责执行，Wolfpack 记录过程并汇总可核实的证据。你可以通过 MCP 工具调用，也可以直接使用命令行。
 
-## 特性亮点
+项目使用 Node.js 原生模块构建，无第三方运行时依赖。
 
-1. **零运行时依赖**：100% 使用 Node.js 原生内置模块（`node:*`），`package.json` 的 `dependencies` 为空，不依赖任何第三方包或外部 SDK。
-2. **纯原生 JSON-RPC 2.0 over stdio**：完全自主实现 MCP 协议（`protocolVersion: 2024-11-05`），支持 `wolf_delegate`、`wolf_status`、`wolf_kill`、`wolf_team` 4 个工具。
-3. **严格判定政策**：
-   - 产物存在即完成（即使自报 ERROR 或退出码非零，只要检测到磁盘产物仍判完成）；
-   - 自报失败但机械验收全部通过判完成；
-   - 区分工具故障与测试失败：命令跑不起来判定为 `error`，跑了但失败判定为 `fail`；
-   - 基线闸门防呆：任一基线命令通过判定为 `stale`，完全不启动工人；
-   - 严格区分「队员声称」与「我已核实」。
-4. **会话精准延续**：通过 `--conversation <id>` 延续上下文，绝不用 `-c`；累计 token 超预算（1,000,000）自动触发冷启动并展示真实数字。
-5. **同 task_id 并发拒绝**：同任务运行中再次委派直接拒绝，避免状态串场。
-6. **零绝对路径硬编码**：支持任意目录部署并拷贝到其他电脑直接运行。
+## 核心能力
 
----
+- **任务委派**：提交独立任务，收集执行结果、文件改动和验收输出。
+- **会话续跑**：使用稳定的 `task_id` 关联 agy 会话；支持强制新会话与累计 token 阈值控制。
+- **并发执行**：一次提交最多 8 个任务，并发数可设为 1–4，默认 2。
+- **独立验收**：执行调用方提供的检查命令，将执行者自述与实际检查结果分开呈现。
+- **基线检查**：派发前确认问题仍然存在，避免重复处理已满足条件的任务。
+- **任务管理**：查询历史、查看运行状态，并终止指定任务的进程树。
 
-## 快速开始：在另一台电脑上的部署步骤
+适合目标明确、可以独立执行且有验收方式的开发任务。有依赖关系的任务应按顺序执行；多个任务同时修改同一文件时，需要调用方协调。
 
-### 1. 环境准备（三个前提，缺一不可）
+## 快速开始
 
-| 前提 | 怎么确认 | 说明 |
-| --- | --- | --- |
-| **ChatGPT 桌面端**（应用本体，**不是网页版**） | 打开桌面端，能看到 Codex / New chat 入口 | 网页版不读本地配置、无本地执行环境，用不了 stdio MCP（详见第 3 节） |
-| **Node.js ≥ 20** | `node -v` | 输出 `v20.x` 或更高 |
-| **Antigravity CLI (`agy`)** | `agy --help` | 秒级返回帮助信息；未登录请先登录 |
+### 环境要求
 
-### 2. 获取代码与配置
+- Node.js 20 或更高版本。
+- 已安装并完成登录的 Antigravity CLI，`agy --help` 可正常执行。
+- 使用 MCP 接入时，需要支持本地 stdio MCP 服务的客户端；也可以仅使用 CLI。
 
-1. 把**整个 `wolfpack-codex` 目录**拷到目标机器（例：`D:\wolfpack-codex`、`/opt/wolfpack-codex`）。目录自包含，**不需要 `npm install`**（零运行时依赖）。
-2. 记下 `agy` 可执行文件的**绝对路径**（例：`D:\AntigravityCLI\agy.exe`、`/usr/local/bin/agy`）。这个值下一步就要用。
+```sh
+node --version
+agy --help
+```
 
-> **agy 路径的解析优先级：环境变量 `WOLFPACK_AGY` > `wolfpack.config.json` > `PATH`。**
-> 在 ChatGPT 桌面端 / 任何 MCP 宿主下，**只用第一种**：宿主拉起 MCP 进程时的工作目录不由你控制，而 `wolfpack.config.json` 是从 cwd 向上搜索的，靠相对位置找配置不可靠。
-> 复制 `wolfpack.config.example.json` 为 `wolfpack.config.json` 这条路，只在「你自己 cd 进项目目录手动跑 `wolf`」时方便，别在 MCP 配置里依赖它。
+### 获取项目
 
-### 3. 注册 MCP 服务（ChatGPT 桌面端 / Codex CLI / IDE 扩展通用）
+```sh
+git clone https://github.com/Cofran-77/wolfpack-codex.git
+cd wolfpack-codex
+```
 
-OpenAI 官方文档（`learn.chatgpt.com/docs/extend/mcp`）原文：
+本仓库为私有仓库，克隆前需要具有访问权限并完成 GitHub 身份验证。项目无需执行 `npm install`。
 
-> The ChatGPT desktop app, Codex CLI, and IDE extension support MCP servers and share MCP configuration for the same Codex host.
-> Supported MCP features — **STDIO servers**: Servers that run as a local process (started by a command).
+运行离线测试和只读状态查询：
 
-也就是说：**ChatGPT 桌面端支持 stdio MCP，且与 Codex CLI / IDE 扩展共用同一份配置**，所以下面这一段三种宿主通用。编辑 `~/.codex/config.toml`（或项目级 `.codex/config.toml`）：
+```sh
+node tests/run.mjs
+node bin/wolf.mjs status --json
+```
+
+测试使用内置模拟执行器，不依赖真实 agy，也不消耗其模型调用额度。`status` 只读取任务记录；它成功返回不代表已经验证 agy 的登录或任务执行能力。
+
+### 接入 Codex
+
+将以下内容加入 Codex 的 MCP 配置（通常为 `~/.codex/config.toml`），把占位路径替换为实际绝对路径：
 
 ```toml
 [mcp_servers.wolfpack]
 command = "node"
-args = ["<wolfpack-codex 绝对路径>/bin/wolf-mcp.mjs"]
-env = { WOLFPACK_AGY = "<agy 绝对路径>" }
+args = ["/absolute/path/to/wolfpack-codex/bin/wolf-mcp.mjs"]
+env = { WOLFPACK_AGY = "/absolute/path/to/agy" }
 ```
 
-> 例如 Windows：
-> ```toml
-> [mcp_servers.wolfpack]
-> command = "node"
-> args = ["D:/DSH-Plugins/wolfpack-codex/bin/wolf-mcp.mjs"]
-> env = { WOLFPACK_AGY = "D:/AntigravityCLI/agy.exe" }
-> ```
-> 例如 Linux/macOS：把上面两个路径换成 `/home/user/...` 形式。
+Windows 路径可使用正斜杠，agy 可执行文件通常为 `agy.exe`。如果客户端无法找到 `node`，也应将 `command` 改为 Node.js 的绝对路径。
 
-**为什么用 `env` 显式给 `WOLFPACK_AGY`（重要）**：宿主拉起 MCP 进程时的工作目录**不保证**在 `wolfpack-codex` 里，而 `wolfpack.config.json` 是从 cwd 向上搜索的——用相对位置找配置不可靠。环境变量优先级最高、与 cwd 无关，是唯一稳的做法。若目标机器上 `agy` 已在 `PATH` 里，`env` 也可以省略。
+也可以通过 Codex CLI 注册：
 
-等价做法：`codex mcp add wolfpack -- node <绝对路径>/bin/wolf-mcp.mjs`
-
-> ⚠️ **不适用**：ChatGPT **网页版**。官方文档明确写着 ChatGPT web 不读取本地 Codex 配置、也不暴露本地执行环境——只有**桌面端应用**、Codex CLI、IDE 扩展这三种本地 Codex host 才支持 stdio MCP。
-> ⚠️ 前提：目标机器必须已装 **Node ≥ 20** 和 **agy**。没有 agy 时工具仍会注册，但每次派活会立刻返回明确的「agy 不可用」原因（不会挂起等超时）。
-
-
-### 4. 运行自检验证
-
-在 `wolfpack-codex` 目录下运行：
-
-```bash
-node bin/wolf.mjs status --json
+```sh
+codex mcp add wolfpack --env "WOLFPACK_AGY=/absolute/path/to/agy" -- node "/absolute/path/to/wolfpack-codex/bin/wolf-mcp.mjs"
 ```
 
-若输出类似以下内容且退出码为 0，即表示台账与环境工作正常：
+重新加载客户端或开启新会话后，调用 `wolf_status` 检查服务是否可用。可用工具如下：
+
+| 工具 | 用途 |
+| --- | --- |
+| `wolf_delegate` | 委派一个任务，返回执行摘要与验收结果 |
+| `wolf_team` | 并发执行一组独立任务 |
+| `wolf_status` | 只读查询历史和运行状态 |
+| `wolf_kill` | 终止指定任务的进程树 |
+
+MCP 服务需要由具有本地进程执行能力的客户端启动。仅有网页聊天界面并不等于能够启动本地 stdio 服务。
+
+### 工作目录与权限
+
+**任务执行和验收命令都以进程的工作目录为准。** CLI 应从待处理项目目录启动，并通过绝对路径引用 Wolfpack 的入口脚本。MCP 模式使用服务进程的工作目录；当前工具参数不支持逐任务指定 `cwd`，接入时应确认客户端为服务设置的工作目录。
+
+建议在 MCP 配置中显式设置 `WOLFPACK_AGY`，避免依赖客户端的 PATH 或工作目录。需要指定配置文件时，可设置 `WOLFPACK_CONFIG_FILE` 为其绝对路径。
+
+**当前 agy 适配器固定传入 `--dangerously-skip-permissions`，会自动批准 agy 的工具操作。** Wolfpack 本身不提供沙箱或任务目录隔离。请在你授权修改的工作区中使用，并明确任务范围与验收要求。
+
+## 使用方式
+
+### 单任务委派
+
+通过 `wolf_delegate` 提交完整、独立的任务描述：
 
 ```json
 {
-  "tasks": [],
-  "total": 0,
-  "truncated": false,
-  "limit": 20,
-  "ledger_path": "..."
+  "task_id": "fix-parser-empty-input",
+  "task": "修复当前项目中 parser 对空输入的处理，补充回归测试，并运行相关测试。保持既有公共接口不变。",
+  "verify": ["npm test"]
 }
 ```
 
-> **本机没有 agy 时如何只跑自检？**
-> 
-> 本项目的全套测试套件**完全不依赖真实 agy**，也不消耗任何网络或订阅额度。直接执行：
-> ```bash
-> node tests/run.mjs
-> ```
-> 全部 **25** 个用例（基线闸门、五态判定、产物救援、续跑与 token 预算冷启动、跨进程 kill、同 task_id 并发拒绝、digest 文案、UTF-8 BOM、shell 解析阶梯、MCP 工具列表等）全部由内置的 `tests/fixtures/fake-worker.mjs` 承载，可随时离线验证功能完整性。期望输出末行：`25 passed, 0 failed`，退出码 0。
+`npm test` 是目标项目的验收命令示例，请替换为实际检查命令。agy 不会自动获得 Codex 当前对话的上下文，任务描述应包含必要的背景、目标、约束和交付要求。
 
-### 5. 配套指令接入
+CLI 提供对应操作。以下示例从目标项目目录执行，入口路径需替换为实际安装路径：
 
-`AGENTS.md` 是**给队长模型读的执行手册**（选档策略、验收铁律、4 个 MCP 工具的用法与参数、成本认知）。
-
-Codex 的指令发现规则（官方文档 `docs/agent-configuration/agents-md` 原文）：从**项目根（通常是 Git 根）**向下走到当前工作目录逐层查找；**找不到项目根时只检查当前目录**。另有 `~/.codex/AGENTS.md` 是**全局**文件，所有仓库都会继承。
-
-两种放法，按目标选：
-
-| 想要的效果 | 放哪里 |
-| --- | --- |
-| **这台机器上所有项目都能用狼群**（推荐） | `~/.codex/AGENTS.md` |
-| 只在某个具体项目里用 | 那个项目的**根目录**（通常就是 Git 根）下的 `AGENTS.md` |
-
-> 注意：目标目录**不是 Git 仓库**时 Codex 只看当前目录、不会向上层走——别把 `AGENTS.md` 放在非仓库目录的父级然后指望它被读到。
-
-### 6. 部署自检清单（照顺序做，每步都有可判定的结果）
-
-| # | 操作 | 期望结果 |
-| --- | --- | --- |
-| 1 | `node -v` | `v20.x` 或更高 |
-| 2 | `node tests/run.mjs`（在项目目录内） | 末行 `25 passed, 0 failed`，退出码 0；**不需要 agy** |
-| 3 | `node bin/wolf.mjs status --json` | 输出合法 JSON 且退出码 0（全新机器上是 `"tasks": []`、`"total": 0`） |
-| 4 | 按第 3 节写入 `[mcp_servers.wolfpack]`（**别漏 `env.WOLFPACK_AGY`**） | 配置文件保存成功 |
-| 5 | 重启桌面端应用（或新开一个会话），问 Codex「调用 wolf_status 看下台账」 | 返回台账内容；工具列表里应出现 `wolf_delegate` / `wolf_status` / `wolf_kill` / `wolf_team` |
-| 6 | 真实派一件小事（例：让 agy 建一个文件，`--verify` 检查该文件） | digest 出现「我已核实」段且 verdict 为 `pass` |
-
-第 5 步若看不到工具：桌面端有**集成终端**，可直接用 CLI 形态（见下节），不依赖 MCP 注册。CLI 形态已在真实 agy 上验证过端到端（含跨进程 `kill`）。
-
----
-
-## 命令行用法 (CLI)
-
-```bash
-# 单任务委派（执行完打印 digest）
-node bin/wolf.mjs delegate --task-id demo-1 --task "修复 parser 边界解析 bug" --verify "npm test"
-
-# 查看台账状态（纯只读，绝不启动工人，台账不存在亦安全返回）
-node bin/wolf.mjs status --json
-
-# 终止正在跑的任务进程树
-node bin/wolf.mjs kill --task-id demo-1
-
-# 并发小队委派
-node bin/wolf.mjs team --tasks tasks.json --concurrency 2
+```sh
+node "/absolute/path/to/wolfpack-codex/bin/wolf.mjs" delegate --task-id fix-parser-empty-input --task "修复 parser 空输入处理并补充回归测试" --verify "npm test"
 ```
 
----
+常用参数：
 
-## 已知未做项 (Known Non-Goals / Roadmap)
+| MCP 参数 | CLI 参数 | 说明 |
+| --- | --- | --- |
+| `task_id` | `--task-id` | 任务标识；同一任务续跑时复用，不相关任务使用新标识 |
+| `task` | `--task` | 自包含的任务描述 |
+| `verify` | `--verify` | 验收命令；MCP 使用数组，CLI 可重复传入 |
+| `verify_baseline` | `--verify-baseline` | 派发前的基线检查；任一命令通过则跳过派发 |
+| `fresh` | `--fresh` | 放弃该任务原有会话，重新开始 |
+| `model` | `--model` | 指定本次使用的 agy 模型 |
 
-1. **跨进程并发不是原子锁**：除进程内 `ActiveRunRegistry` 外，已实现基于 `<raw_dir>/live/<taskId>.json` 的跨进程拒绝（启动前读登记并按 PID 探活，仍存活则拒绝；`wolf kill` 也靠它跨进程终止进程树）。但「读登记 → 写登记」之间存在竞态窗口，**不是原子文件锁**：两个进程在同一瞬间启动同一 `task_id` 时，仍可能都通过检查。要绝对互斥需要 `O_EXCL` 锁文件或类似原语，本版本未做。
-2. **agy 思考明文实时流提取**：由于 upstream agy CLI 协议未在 stdout 将 Thinking 思维链明文直接暴露，当前仅按规范提取 `usage.thinking_tokens` 计数；思考正文保留在本地日志文件中。
-3. **MCP 协议资源订阅（Resources/Prompts）**：当前版本重点交付核心的 4 个工具调用能力，未声明 MCP Resources 与 Prompts 扩展能力。
+基线检查适合确认某个已知失败是否仍然存在。应使用针对该问题的检查命令，避免将无关的成功检查误判为任务已完成。
+
+### 并发任务
+
+调用 `wolf_team`，或将以下内容保存为 `tasks.json`：
+
+```json
+[
+  {
+    "task_id": "parser-tests",
+    "task": "为 parser 模块补充边界测试，仅修改该模块的测试文件。",
+    "verify": ["npm run test:parser"]
+  },
+  {
+    "task_id": "api-docs",
+    "task": "根据现有接口实现更新 API 文档，仅修改 docs/api 目录。",
+    "verify": ["npm run docs:check"]
+  }
+]
+```
+
+将任务与检查命令调整为目标项目的实际内容后执行：
+
+```sh
+node "/absolute/path/to/wolfpack-codex/bin/wolf.mjs" team --tasks tasks.json --concurrency 2
+```
+
+MCP 调用的参数形式为 `{ "tasks": [...], "concurrency": 2 }`。同一批任务不能使用重复的 `task_id`；同一个任务运行期间也不能再次委派。
+
+### 查询与终止
+
+```sh
+node "/absolute/path/to/wolfpack-codex/bin/wolf.mjs" status --json
+node "/absolute/path/to/wolfpack-codex/bin/wolf.mjs" status --task-id fix-parser-empty-input --json
+node "/absolute/path/to/wolfpack-codex/bin/wolf.mjs" kill --task-id fix-parser-empty-input
+```
+
+`status` 不启动 agy，也不执行验收命令。任务记录默认位于当前用户的 `~/.wolfpack` 目录，可通过配置修改。
+
+## 结果判定
+
+摘要分别展示“队员声称”和“我已核实”。前者是执行者报告，后者包含文件改动探测与验收命令结果。
+
+| `verdict` | 含义 |
+| --- | --- |
+| `pass` | 已配置的验收命令全部成功执行并通过 |
+| `fail` | 验收命令已执行，但存在未通过的检查 |
+| `error` | 检查无法正常执行等工具或环境错误 |
+| `unverified` | 未提供验收命令，无法据此确认任务达标 |
+| `stale` | 基线检查中已有命令通过，因此跳过本次派发 |
+
+执行状态与验收结论是两个不同维度：agy 报错后，如果检测到文件改动，执行状态仍可能被标记为 `completed`；验收全部通过时也可能恢复该状态。**`completed` 不等于 `verdict: pass`，文件存在或发生改动也不代表内容正确。**
+
+非 Git 工作区无法通过 Git 状态计算改动差集，此时会报告“无法判定”。应结合明确的验收命令和必要的人工审查判断结果。
+
+CLI 正常返回的结构化结果也可能包含失败结论；自动化调用应使用 `--json` 并检查 `verdict`，不要只依赖进程退出码。
+
+## 配置
+
+可参考 [wolfpack.config.example.json](wolfpack.config.example.json) 创建本地 `wolfpack.config.json`。默认从当前工作目录向上查找配置文件；`WOLFPACK_CONFIG_FILE` 可指定要读取的文件。
+
+常用配置优先使用对应环境变量，再使用 JSON 配置值，最后采用默认值。
+
+| JSON 配置项 | 环境变量 | 默认值 / 说明 |
+| --- | --- | --- |
+| `agyPath` | `WOLFPACK_AGY` | 从 PATH 查找 `agy`，Windows 为 `agy.exe` |
+| `mode` | `WOLFPACK_MODE` | `accept-edits` |
+| `model` | `WOLFPACK_MODEL` | 由 agy 决定 |
+| `effort` | `WOLFPACK_EFFORT` | 由 agy 决定 |
+| `ledgerPath` | `WOLFPACK_LEDGER` | `~/.wolfpack/runs.ndjson` |
+| `rawDir` | `WOLFPACK_RAW_DIR` | `~/.wolfpack/raw` |
+| `taskTimeoutMs` | `WOLFPACK_TASK_TIMEOUT` | `0`，不设置 Wolfpack 任务超时 |
+| `verifyTimeoutMs` | `WOLFPACK_VERIFY_TIMEOUT` | `300000` 毫秒 |
+| `continuationTokenBudget` | `WOLFPACK_TOKEN_BUDGET` | `1000000`，累计用量达到阈值时触发新会话 |
+
+会话阈值用于控制上下文续用，并不是费用上限或单次任务的硬 token 限额。实际模型用量由 agy 的返回数据决定。
+
+本地配置、凭据和运行日志不应提交到仓库；项目的 `.gitignore` 已排除常见相关文件。
+
+## 开发与文档
+
+```sh
+node tests/run.mjs
+```
+
+测试覆盖基线检查、结果判定、会话续跑、并发冲突、任务终止、配置解析和 MCP 工具发现等行为。
+
+```text
+bin/          CLI 与 MCP 入口
+src/          任务调度、验收、记录和进程管理
+src/worker/   agy 适配器
+tests/       离线测试及模拟执行器
+docs/        设计文档
+```
+
+- [设计说明](docs/DESIGN.md)：内部结构与实现背景。
+- [委派操作手册](AGENTS.md)：供调用方参考的任务拆分与验收约定。接入现有项目时按需合并相关内容，避免覆盖已有项目指令。
+
+修改后请运行相关检查，通过分支与 Pull Request 协作。单纯修改文档时，重点核对命令、参数、链接和描述是否与实现一致。
+
+## 当前限制
+
+- 跨进程同任务检查依赖运行记录与进程存活探测，尚未使用原子文件锁，极端并发下存在竞态窗口。
+- 并发任务共享调用方提供的工作区，不自动创建隔离目录或 Git worktree。
+- 当前适配器读取 agy 的最终 JSON 结果，未提供实时执行日志面板或思考正文展示。
+- MCP 接口仅提供上述四个工具，未实现 Resources、Prompts 或订阅能力。
+- agy 服务可用性、模型配额与权限行为由其自身环境决定，Wolfpack 不提供可用性保证。
