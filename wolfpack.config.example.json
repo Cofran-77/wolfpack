@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "worker": "agy",
+  "agyPath": "agy",
+  "mode": "accept-edits",
+  "model": null,
+  "effort": null,
+  "ledgerPath": null,
+  "rawDir": null,
+  "taskTimeoutMs": 0,
+  "verifyTimeoutMs": 300000,
+  "continuationTokenBudget": 1000000,
+  "maxRoundsPerTask": null,
+  "unknownUsageRoundCap": 20,
+  "shell": null,
+  "concurrency": 2
+}
