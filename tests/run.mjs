@@ -3,7 +3,6 @@
 import { tests as baselineTests } from './baseline.test.mjs'
 import { tests as verdictTests } from './verdict.test.mjs'
 import { tests as continuationTests } from './continuation.test.mjs'
-import { tests as concurrencyTests } from './concurrency.test.mjs'
 import { tests as ledgerTests } from './ledger.test.mjs'
 import { tests as digestTests } from './digest.test.mjs'
 import { tests as artifactTests } from './artifact.test.mjs'
@@ -11,6 +10,12 @@ import { tests as mcpTests } from './mcp.test.mjs'
 import { tests as pathsTests } from './paths.test.mjs'
 import { tests as shellTests } from './shell.test.mjs'
 import { tests as teamTests } from './team.test.mjs'
+
+// 并发用例按平台选实现：POSIX 的信号退出语义与 Windows 不同，详见 README「测试」一节。
+const concurrencySuitePath = process.platform === 'win32'
+  ? './concurrency.windows.test.mjs'
+  : './concurrency.posix.test.mjs'
+const { tests: concurrencyTests } = await import(concurrencySuitePath)
 
 const allSuites = [
   ...baselineTests,

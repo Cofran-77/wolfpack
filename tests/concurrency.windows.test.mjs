@@ -3,6 +3,8 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+// Windows 版：进程结束后 exitCode 非空，退出判定只需检查 exitCode。
+// macOS / Linux 版见 concurrency.posix.test.mjs，两份文件除该判定外内容一致，修改时需同步。
 import { killRun, runDelegateTask } from '../src/delegate.mjs'
 import { ActiveRunRegistry, RunsLedger, TaskBusyError } from '../src/ledger.mjs'
 import { killProcessTree } from '../src/spawn.mjs'
