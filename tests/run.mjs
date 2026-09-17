@@ -11,10 +11,10 @@ import { tests as pathsTests } from './paths.test.mjs'
 import { tests as shellTests } from './shell.test.mjs'
 import { tests as teamTests } from './team.test.mjs'
 
-// 并发用例按平台选实现：POSIX 的信号退出语义与 Windows 不同，详见 README「测试」一节。
+// 并发用例按平台选实现：macOS/Linux 的 POSIX 信号退出语义与 Windows 不同，详见 README「测试」一节。
 const concurrencySuitePath = process.platform === 'win32'
   ? './concurrency.windows.test.mjs'
-  : './concurrency.posix.test.mjs'
+  : './concurrency.macos-linux.test.mjs'
 const { tests: concurrencyTests } = await import(concurrencySuitePath)
 
 const allSuites = [

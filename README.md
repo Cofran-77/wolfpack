@@ -231,7 +231,7 @@ node tests/run.mjs
 
 测试覆盖基线检查、结果判定、会话续跑、并发冲突、任务终止、配置解析和 MCP 工具发现等行为。
 
-并发与任务终止用例按平台分成两份实现：`tests/concurrency.windows.test.mjs` 按 Windows 语义判断进程结束（`exitCode` 非空即可），`tests/concurrency.posix.test.mjs` 同时接受退出码与信号（POSIX 下被 `SIGKILL` 终止的进程 `exitCode` 为 `null`，终止原因记录在 `signalCode`）。`tests/run.mjs` 按运行平台自动选择，两份文件除该判定外内容一致，修改时需同步。在 macOS/Linux 上运行测试要求 `node` 位于 `PATH` 中，否则部分用例会以 `exit 127` 之类的形式假失败。
+并发与任务终止用例按平台分成两份实现：`tests/concurrency.windows.test.mjs` 按 Windows 语义判断进程结束（`exitCode` 非空即可），`tests/concurrency.macos-linux.test.mjs` 同时接受退出码与信号（POSIX 下被 `SIGKILL` 终止的进程 `exitCode` 为 `null`，终止原因记录在 `signalCode`）。`tests/run.mjs` 按运行平台自动选择，两份文件除该判定外内容一致，修改时需同步。在 macOS/Linux 上运行测试要求 `node` 位于 `PATH` 中，否则部分用例会以 `exit 127` 之类的形式假失败。
 
 ```text
 bin/          CLI 与 MCP 入口
