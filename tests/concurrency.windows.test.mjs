@@ -228,9 +228,12 @@ export const tests = [
         await new Promise(r => setTimeout(r, 1000))
         assert.equal(delegateFinished, false, '工人挂起期间 delegate 绝不能提前返回/收工')
 
-        // 检查台账：挂起期间绝不应记出 completed 记录
+        // 检查台账：派发即记录后，挂起期间允许存在运行中记录，但绝不能出现已结束的记录
         const latest = await ledger.latest('task-hang-check')
-        assert.equal(latest, undefined, '工人挂起期间不应记出台账记录')
+        assert.ok(
+          latest === undefined || latest.lastStopReason === 'running',
+          '工人挂起期间不得出现已结束的台账记录',
+        )
 
         // 清理终止任务
         await killRun('task-hang-check', ledger, { rawDir })

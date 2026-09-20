@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 
-import { cleanTempDir, createTempDir, projectRoot } from './test-helper.mjs'
+import { killRun, runDelegateTask } from '../src/delegate.mjs'
+import { RunsLedger } from '../src/ledger.mjs'
+import { readLiveRecord } from '../src/live.mjs'
+import { cleanTempDir, createTempDir, fakeWorkerPath, projectRoot } from './test-helper.mjs'
 
 export const tests = [
   {
@@ -155,6 +158,63 @@ export const tests = [
         assert.ok(staleTask)
         assert.strictEqual(staleTask.changed_files_determined, false, '未启动工人时 changed_files_determined 必须为 false')
       } finally {
+        cleanTempDir(tempDir)
+      }
+    },
+  },
+  {
+    name: 'dispatch-start-recorded-before-worker-finishes',
+    async run() {
+      const tempDir = createTempDir('dispatch-start-')
+      const ledgerPath = join(tempDir, 'runs.ndjson')
+      const rawDir = join(tempDir, 'raw')
+
+      let delegatePromise
+      const origHang = process.env.FAKE_WORKER_HANG
+      try {
+        process.env.FAKE_WORKER_HANG = '1'
+
+        delegatePromise = runDelegateTask({
+          config: { agyPath: fakeWorkerPath, ledgerPath, rawDir },
+          args: { task_id: 'task-dispatch-start', task: 'Dispatch start record test' },
+          cwd: tempDir,
+          ledger: new RunsLedger(ledgerPath),
+        }).catch(() => {})
+
+        // 工人仍在挂起时，台账里必须已经能看到这次派发；
+        // 这样即便 CLI 进程在任务中途被中断，也不会留下「完全无痕」的派发。
+        let latest
+        for (let i = 0; i < 60; i++) {
+          await new Promise(r => setTimeout(r, 50))
+          latest = await new RunsLedger(ledgerPath).latest('task-dispatch-start')
+          if (latest) break
+        }
+
+        assert.ok(latest, '工人仍在运行时，台账里必须已经能看到这次派发')
+        assert.equal(latest.lastStopReason, 'running', '派发中的记录必须标记为 running')
+        assert.equal(latest.lastVerdict, 'running', '派发中的记录不得冒充已完成的 verdict')
+        assert.equal(latest.taskId, 'task-dispatch-start')
+
+        // 必须等 worker 真正启动（live 登记里出现 workerPid）再杀：
+        // 否则 killRun 会落在 spawn 之前成为空操作，留下挂起的孤儿进程。
+        let liveRec
+        for (let i = 0; i < 100; i++) {
+          await new Promise(r => setTimeout(r, 50))
+          liveRec = await readLiveRecord(rawDir, 'task-dispatch-start')
+          if (liveRec?.workerPid) break
+        }
+        assert.ok(liveRec?.workerPid, '工人启动后 live 登记必须带上 workerPid')
+      } finally {
+        // 无论断言是否失败，都必须终止挂起的工人进程，否则遗留子进程会拖住整轮测试
+        await killRun('task-dispatch-start', new RunsLedger(ledgerPath), { rawDir }).catch(() => {})
+        if (delegatePromise) {
+          await Promise.race([
+            delegatePromise.catch(() => {}),
+            new Promise(resolve => setTimeout(resolve, 5000)),
+          ])
+        }
+        if (origHang !== undefined) process.env.FAKE_WORKER_HANG = origHang
+        else delete process.env.FAKE_WORKER_HANG
         cleanTempDir(tempDir)
       }
     },

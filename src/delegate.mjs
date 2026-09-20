@@ -530,6 +530,23 @@ export async function runDelegateTask({
     liveEntry.continuing = continuation.continuing
     liveEntry.conversationId = continuation.conversationId
 
+    // ── 派发即记录 ──────────────────────────────────────────────────────
+    // 台账只在收工时写，会让「中途被中断的派发」完全无痕（例如 CLI 进程被外层
+    // 超时包装杀掉，工人却在后台跑完）。这里先落一条运行中记录，收工第 9 步再补
+    // 完整结果；折叠状态时取最新一条，因此正常运行的任务看不出差别。
+    if (theLedger) {
+      await theLedger.record({
+        taskId,
+        worker: worker.name,
+        round: continuation.round,
+        cwd,
+        stopReason: 'running',
+        verdict: 'running',
+        changedFilesDetermined: false,
+        note: 'dispatch-start',
+      })
+    }
+
     // ── 3. 产物快照 before ─────────────────────────────────────────────
     const before = await takeArtifactSnapshot(cwd, runtime)
 

@@ -12,7 +12,7 @@
 | `src/spawn.mjs` | `ctx.subprocess` (Cordis) | **唯一**子进程出口，封装 `node:child_process`，实现 Windows 与 Unix 强力进程树杀灭 |
 | `src/verify.mjs` | `lib/agy-runner.js:1590-1719` | 验收与基线命令执行（支持 `WOLFPACK_SHELL` 覆盖），基线闸门判定，失败信号提取 |
 | `src/ledger.mjs` | `lib/runs-ledger.js` | NDJSON 追加写与增量读折叠，同 `task_id` 独占锁（拒绝并发），文件原子压缩 |
-| `src/delegate.mjs` | `lib/wolf-delegate.js` + `lib/agy-runner.js` | 核心委派流程：基线闸门 → 独占锁 → 快照 → 工人 → 产物差集 → 验收 → 判定政策与机械救回 → 台账 |
+| `src/delegate.mjs` | `lib/wolf-delegate.js` + `lib/agy-runner.js` | 核心委派流程：基线闸门 → 独占锁 → 快照 → 工人 → 产物差集 → 验收 → 判定政策与机械救回 → 台账（**派发即写 `running`，收工补结果**，中途被掐断的派发也留痕） |
 | `src/digest.mjs` | `lib/wolf-delegate.js:119-220` | 有界 digest 渲染：严格区分「队员声称」与「我已核实」，诚实展示诊断与 tail 降级 |
 | `src/team.mjs` | `lib/wolf-team.js` | 多工人并发扇出、入参严格校验、重复 `task_id` 整批拒绝、单任务失败隔离、摘要收敛 |
 | `src/worker/agy.mjs` | `lib/agy-runner.js` (适配部分) | agy 工人适配器契约实现（参数拼装、会话延续、结果分类、心跳探针） |

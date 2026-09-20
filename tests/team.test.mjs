@@ -4,7 +4,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { readConfigFile } from '../src/config.mjs'
-import { cleanTempDir, createTempDir, fakeWorkerPath, projectRoot } from './test-helper.mjs'
+import { cleanTempDir, createTempDir, fakeClaudePath, fakeWorkerPath, projectRoot } from './test-helper.mjs'
 
 export const tests = [
   {
@@ -48,6 +48,9 @@ export const tests = [
             env: {
               ...process.env,
               WOLFPACK_AGY: fakeWorkerPath,
+              // team 会轮换派活，第二个任务必然落到 claude；这里同样换成假工人，
+              // 否则测试会真的调用本机 claude CLI（慢、且污染 ~/.claude 会话目录）。
+              WOLFPACK_CLAUDE: fakeClaudePath,
               WOLFPACK_LEDGER: ledgerPath,
               WOLFPACK_RAW_DIR: rawDir,
             },
