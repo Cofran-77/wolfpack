@@ -37,10 +37,10 @@ export class TaskBusyError extends Error {
    * @param {number} [startedAt]
    * @param {number} [now]
    */
-  constructor(taskId, activeRunId, startedAt, now = Date.now()) {
+  constructor(taskId, activeRunId, startedAt, now = Date.now(), workerName = 'agy') {
     const elapsed = typeof startedAt === 'number' ? `，已跑 ${Math.max(0, now - startedAt)}ms` : ''
     super(
-      `wolfpack: task_id "${taskId}" 上已经有正在运行的 agy 会话`
+      `wolfpack: task_id "${taskId}" 上已经有正在运行的 ${workerName} 会话`
       + `（runId ${activeRunId}${elapsed}）。同一个 task_id 不允许并发：`
       + '如果这是另一件事，请换一个新的 task_id；'
       + '如果确实要继续这件事，请等它跑完，再用同一个 task_id 追问。',
@@ -69,10 +69,10 @@ export class ActiveRunRegistry {
    * @param {number} [at]
    * @returns {string}
    */
-  claim(taskId, runId, at = Date.now()) {
+  claim(taskId, runId, at = Date.now(), workerName = 'agy') {
     const existing = this.active.get(taskId)
     if (existing !== undefined) {
-      throw new TaskBusyError(taskId, existing.runId, existing.startedAt, at)
+      throw new TaskBusyError(taskId, existing.runId, existing.startedAt, at, workerName)
     }
     this.active.set(taskId, { runId, startedAt: at })
     return runId
@@ -173,6 +173,7 @@ export function foldEntries(entries, seed) {
       conversationId: convId,
       round: typeof entry.round === 'number' && Number.isFinite(entry.round) ? entry.round : previous?.round ?? 0,
       cwd: typeof entry.cwd === 'string' && entry.cwd !== '' ? entry.cwd : previous?.cwd,
+      worker: typeof entry.worker === 'string' && entry.worker !== '' ? entry.worker : previous?.worker,
       changedFiles: [...merged],
       changedFilesDetermined: entryDetermined !== undefined ? entryDetermined : (previous?.changedFilesDetermined ?? false),
       lastStopReason: typeof entry.stopReason === 'string' ? entry.stopReason : previous?.lastStopReason,
@@ -180,9 +181,14 @@ export function foldEntries(entries, seed) {
       lastVerdict: typeof entry.verdict === 'string' ? entry.verdict : previous?.lastVerdict,
       totalTokens: (previous?.totalTokens ?? 0) + (entryTokens ?? 0),
       totalCacheReadTokens: (previous?.totalCacheReadTokens ?? 0) + entryCacheRead,
-      lastTurns: typeof entry.turns === 'number' ? entry.turns : previous?.lastTurns,
-      lastDurationMs: typeof entry.durationMs === 'number' ? entry.durationMs : previous?.lastDurationMs,
-      lastAt: typeof entry.at === 'number' ? entry.at : previous?.lastAt ?? 0,
+        lastTurns: typeof entry.turns === 'number' ? entry.turns : previous?.lastTurns,
+        lastDurationMs: typeof entry.durationMs === 'number' ? entry.durationMs : previous?.lastDurationMs,
+        // 停滞监控是**按工人各自一套**的：这里如实记录本轮那一个工人的采样结果
+        stallWarnings: typeof entry.stallWarnings === 'number' ? entry.stallWarnings : previous?.stallWarnings,
+        stallSilentMs: typeof entry.stallSilentMs === 'number' ? entry.stallSilentMs : previous?.stallSilentMs,
+        stallHeartbeats: typeof entry.stallHeartbeats === 'number' ? entry.stallHeartbeats : previous?.stallHeartbeats,
+        stallAvailable: typeof entry.stallAvailable === 'boolean' ? entry.stallAvailable : previous?.stallAvailable,
+        lastAt: typeof entry.at === 'number' ? entry.at : previous?.lastAt ?? 0,
       usageMissingRounds,
     })
   }
@@ -376,6 +382,7 @@ export class RunsLedger {
         changedFilesDetermined: state.changedFilesDetermined,
         conversationId: state.conversationId,
         cwd: state.cwd,
+        worker: state.worker,
         stopReason: state.lastStopReason,
         note: state.lastNote,
         verdict: state.lastVerdict,
@@ -383,6 +390,10 @@ export class RunsLedger {
         cacheReadTokens: state.totalCacheReadTokens,
         turns: state.lastTurns,
         durationMs: state.lastDurationMs,
+        stallWarnings: state.stallWarnings,
+        stallSilentMs: state.stallSilentMs,
+        stallHeartbeats: state.stallHeartbeats,
+        stallAvailable: state.stallAvailable,
         usageMissingRounds: state.usageMissingRounds,
       }
       finalEntries.push(summaryEntry, ...toKeep)

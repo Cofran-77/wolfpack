@@ -71,12 +71,14 @@ export const tests = [
       const tools = listResp.result?.tools || []
       const toolNames = tools.map(t => t.name)
 
-      // 断言返回里含 4 个工具名
-      assert.equal(toolNames.length, 4)
+      // 断言返回里含 6 个工具名（4 个委派工具 + 实时面板只读工具）
+      assert.equal(toolNames.length, 6)
       assert(toolNames.includes('wolf_delegate'))
       assert(toolNames.includes('wolf_status'))
       assert(toolNames.includes('wolf_kill'))
       assert(toolNames.includes('wolf_team'))
+      assert(toolNames.includes('wolf_live'))
+      assert(toolNames.includes('wolf_panel'))
     },
   },
 ]

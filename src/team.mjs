@@ -27,6 +27,7 @@ function buildTeamSummary(tasks, counts) {
   for (const t of tasks) {
     const details = []
     if (t.round !== undefined) details.push(`第 ${t.round} 轮`)
+    if (t.worker) details.push(t.worker)
     if (t.stop_reason) details.push(t.stop_reason)
     if (t.changed_files_determined === false) details.push('改动未探测')
     else if (typeof t.changed_file_count === 'number') details.push(`改动 ${t.changed_file_count} 文件`)
@@ -79,6 +80,7 @@ export function renderTeamDigest(value) {
         : (t.verdict === 'stale' ? '○' : (t.verdict === 'unverified' ? '?' : '⚠')))
     const parts = []
     if (t.round !== undefined) parts.push(`第 ${t.round} 轮`)
+    if (t.worker) parts.push(t.worker)
     if (t.continued === true) parts.push('续跑')
     if (t.stop_reason) parts.push(t.stop_reason)
     if (t.changed_files_determined === false) parts.push('改动未探测')
@@ -213,6 +215,7 @@ export async function runTeamTasks({
 
     return {
       task_id: res.task_id,
+      worker: res.worker,
       round: res.round,
       verdict: res.verdict,
       stop_reason: res.stop_reason,

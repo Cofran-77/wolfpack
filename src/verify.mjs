@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
 import { spawnProcess } from './spawn.mjs'
+import { resolveRuntime } from './runtime/registry.mjs'
 
 /**
  * 检查指定命令是否在 PATH 中。
@@ -263,14 +264,18 @@ export async function runVerify({
   tailLines = 20,
   graceMs = 5_000,
   env = process.env,
+  runtime,
 }) {
   const shell = shellArgv ?? defaultShellArgv(undefined, env)
+  // 验收命令同样走注入的运行时：DSH 一类宿主换掉运行时即可（未注入则回退内置 Node 实现）
+  const rt = resolveRuntime(runtime)
+  const spawnFn = typeof rt?.spawn === 'function' ? rt.spawn.bind(rt) : spawnProcess
   const results = []
 
   for (const command of commands) {
     if (typeof command !== 'string' || command.trim() === '') continue
 
-    const proc = spawnProcess({
+    const proc = spawnFn({
       argv: [...shell, command],
       cwd,
       env,

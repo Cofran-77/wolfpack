@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 export const projectRoot = join(__dirname, '..')
 export const fakeWorkerPath = join(__dirname, 'fixtures', 'fake-worker.mjs')
+export const fakeClaudePath = join(__dirname, 'fixtures', 'fake-claude.mjs')
 
 export function createTempDir(prefix = 'wolf-test-') {
   return mkdtempSync(join(tmpdir(), prefix))

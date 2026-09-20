@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
+import { resolveStallConfigs, stallToastEnabled } from './stall.mjs'
+
 /**
  * 将路径中的 ~ 展开为当前用户家目录。
  *
@@ -106,8 +108,17 @@ export function loadConfig(overrides = {}, cwd = process.cwd(), env = process.en
   const agyPathRaw = env.WOLFPACK_AGY || merged.agyPath || merged.workerPath || defaultWorkerBin
   const agyPath = resolveHome(agyPathRaw)
 
-  // 2. worker 名称
-  const worker = env.WOLFPACK_WORKER || merged.worker || 'agy'
+  // 2. worker 名称与自动选择策略
+  // 默认 'auto'（全自动）：装了谁就用谁；agy 与 claude 都在时自动轮流派活。
+  // 显式填 'agy' / 'claude' 则固定用该工人（该工人不可用时自动回退到可用的那一个）。
+  const worker = env.WOLFPACK_WORKER || merged.worker || 'auto'
+
+  // 2.1 claude 工人路径与专属配置（与 agy 对称）
+  const defaultClaudeBin = process.platform === 'win32' ? 'claude.exe' : 'claude'
+  const claudePath = resolveHome(env.WOLFPACK_CLAUDE || merged.claudePath || defaultClaudeBin)
+  const claudeModel = env.WOLFPACK_CLAUDE_MODEL ?? merged.claudeModel ?? undefined
+  const claudePermissionMode = env.WOLFPACK_CLAUDE_PERMISSION_MODE || merged.claudePermissionMode || undefined
+  const claudeAgents = env.WOLFPACK_CLAUDE_AGENTS ?? merged.claudeAgents ?? undefined
 
   // 3. 执行模式
   const mode = env.WOLFPACK_MODE || merged.mode || 'accept-edits'
@@ -187,9 +198,27 @@ export function loadConfig(overrides = {}, cwd = process.cwd(), env = process.en
   const maxBytes = Number(env.WOLFPACK_LEDGER_MAX_BYTES ?? merged.maxBytes ?? 10 * 1024 * 1024) || 10 * 1024 * 1024
   const keepRounds = Number(env.WOLFPACK_LEDGER_KEEP_ROUNDS ?? merged.keepRounds ?? 10) || 10
 
+  // 16. 停滞监控：**每个工人各一套**（agy 看自己的 brain/conversations，claude 看 ~/.claude/projects）
+  const stall = resolveStallConfigs({ env, config: merged })
+  const defaultStallLog = join(dirname(ledgerPath), 'stall.ndjson')
+  const stallLogPath = resolveHome(env.WOLFPACK_STALL_LOG || merged.stallLogPath || defaultStallLog)
+  const stallToast = stallToastEnabled(env, merged)
+
+  // 17. 实时面板（只读 HTTP，默认只监听回环地址）
+  const panelPortRaw = Number(env.WOLFPACK_PANEL_PORT ?? merged.panelPort ?? 8787)
+  const panelPort = Number.isInteger(panelPortRaw) && panelPortRaw > 0 && panelPortRaw < 65536 ? panelPortRaw : 8787
+  const panelHost = env.WOLFPACK_PANEL_HOST || merged.panelHost || '127.0.0.1'
+  const panelToken = env.WOLFPACK_PANEL_TOKEN || merged.panelToken || undefined
+  const panelRefreshRaw = Number(env.WOLFPACK_PANEL_REFRESH ?? merged.panelRefreshMs ?? 3000)
+  const panelRefreshMs = Number.isFinite(panelRefreshRaw) && panelRefreshRaw >= 500 ? Math.floor(panelRefreshRaw) : 3000
+
   return {
     agyPath,
     worker,
+    claudePath,
+    claudeModel,
+    claudePermissionMode,
+    claudeAgents,
     mode,
     model,
     effort,
@@ -206,6 +235,15 @@ export function loadConfig(overrides = {}, cwd = process.cwd(), env = process.en
     maxEntries,
     maxBytes,
     keepRounds,
+    stall,
+    stallLogPath,
+    stallToast,
+    panel: {
+      port: panelPort,
+      host: panelHost,
+      token: panelToken,
+      refreshMs: panelRefreshMs,
+    },
     graceMs: 5_000,
     configPath,
   }

@@ -1,7 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "worker": "agy",
+  "worker": "auto",
   "agyPath": "agy",
+  "claudePath": "claude",
+  "claudeModel": null,
+  "claudePermissionMode": null,
+  "claudeAgents": null,
   "mode": "accept-edits",
   "model": null,
   "effort": null,
@@ -13,5 +17,25 @@
   "maxRoundsPerTask": null,
   "unknownUsageRoundCap": 20,
   "shell": null,
-  "concurrency": 2
+  "concurrency": 2,
+  "stall": {
+    "windowSeconds": 300,
+    "windowSecondsByWorker": {
+      "agy": 300,
+      "claude": 300
+    },
+    "warnings": 3,
+    "warningsByWorker": null,
+    "pollSeconds": 30,
+    "toast": false,
+    "storeRoots": {
+      "agy": null,
+      "claude": null
+    }
+  },
+  "stallLogPath": null,
+  "panelPort": 8787,
+  "panelHost": "127.0.0.1",
+  "panelToken": null,
+  "panelRefreshMs": 3000
 }

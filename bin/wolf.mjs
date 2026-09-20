@@ -2,10 +2,19 @@
 
 import { readFileSync } from 'node:fs'
 import { loadConfig, stripBom } from '../src/config.mjs'
-import { killRun, runDelegateTask } from '../src/delegate.mjs'
+import { killRun, liveRuns, runDelegateTask } from '../src/delegate.mjs'
 import { renderDigest, renderStatus } from '../src/digest.mjs'
 import { defaultActiveRuns, RunsLedger } from '../src/ledger.mjs'
 import { listLiveRecords } from '../src/live.mjs'
+import {
+  buildLivePayload,
+  createLiveServer,
+  enforcePayloadBounds,
+  mergeLiveRecords,
+  renderLiveSummary,
+} from '../src/live-route.mjs'
+// 运行时注入：导入 Node 运行时实现即注入（见 src/runtime/node.mjs 末尾）。
+import { createNodeStallNotifier } from '../src/runtime/node.mjs'
 import { renderTeamDigest, runTeamTasks } from '../src/team.mjs'
 
 /**
@@ -64,6 +73,18 @@ function parseArgs(argv) {
       flags.concurrency = Number(argv[++i])
     } else if (arg.startsWith('--concurrency=')) {
       flags.concurrency = Number(arg.slice('--concurrency='.length))
+    } else if (arg === '--port' && i + 1 < argv.length) {
+      flags.port = Number(argv[++i])
+    } else if (arg.startsWith('--port=')) {
+      flags.port = Number(arg.slice('--port='.length))
+    } else if (arg === '--host' && i + 1 < argv.length) {
+      flags.host = argv[++i]
+    } else if (arg.startsWith('--host=')) {
+      flags.host = arg.slice('--host='.length)
+    } else if (arg === '--token' && i + 1 < argv.length) {
+      flags.token = argv[++i]
+    } else if (arg.startsWith('--token=')) {
+      flags.token = arg.slice('--token='.length)
     }
   }
 
@@ -81,6 +102,8 @@ async function readStdin() {
 async function main() {
   const { command, flags } = parseArgs(process.argv.slice(2))
   const config = loadConfig()
+  // 停滞报警的宿主外设：控制台 + 台账；桌面通知默认关（WOLFPACK_STALL_TOAST=1 才弹）。
+  config.stallToastNotifier = createNodeStallNotifier({ toast: config.stallToast === true })
   const ledger = new RunsLedger(config.ledgerPath, config)
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
@@ -91,6 +114,15 @@ async function main() {
   status     查看台账与任务状态（纯只读，绝不启动工人）
   kill       终止正在运行的任务
   team       并发小队委派
+  live       打印一次实时状态（纯只读，两个工人分节展示）
+  panel      起本地实时面板（只读 HTTP，默认 127.0.0.1:8787）
+
+工人默认全自动挑选：装了谁就用谁，agy 与 claude 都在时自动轮流派活；
+需要固定工人时设置 WOLFPACK_WORKER=agy|claude（或写进 wolfpack.config.json 的 worker）。
+
+实时面板与停滞监控（两个工人各一套）：
+  wolf panel [--port 8787] [--host 127.0.0.1] [--token <口令>]
+  wolf live [--json] [--limit 8]
 `)
     process.exit(0)
   }
@@ -155,6 +187,7 @@ async function main() {
         const used = s.totalTokens || 0
         return {
           task_id: s.taskId,
+          worker: s.worker,
           round: s.round,
           last_verdict: s.lastVerdict,
           last_stop_reason: s.lastStopReason,
@@ -255,6 +288,84 @@ async function main() {
       console.error('[wolf] team 失败:', err?.message || err)
       process.exit(1)
     }
+  }
+
+  if (command === 'live') {
+    try {
+      const payload = await buildLivePayload({
+        ledger,
+        activeRuns: defaultActiveRuns,
+        liveHandles: await mergeLiveRecords(config.rawDir, liveRuns),
+        stallConfigs: config.stall,
+        panelOptions: { refreshMs: config.panel?.refreshMs },
+        ...(Number.isFinite(flags.limit) ? { maxRuns: flags.limit } : {}),
+      })
+      if (flags.json) {
+        console.log(JSON.stringify(JSON.parse(enforcePayloadBounds(payload)), null, 2))
+      } else {
+        console.log(renderLiveSummary(payload))
+      }
+      process.exit(0)
+    } catch (err) {
+      console.error('[wolf] live 失败:', err?.message || err)
+      process.exit(1)
+    }
+  }
+
+  if (command === 'panel') {
+    const host = flags.host || config.panel?.host || '127.0.0.1'
+    const token = flags.token || config.panel?.token
+    const wanted = Number.isInteger(flags.port) && flags.port > 0 && flags.port < 65536
+      ? flags.port
+      : (config.panel?.port ?? 8787)
+    const serverOptions = {
+      config: {
+        ledger,
+        activeRuns: defaultActiveRuns,
+        liveHandles: await mergeLiveRecords(config.rawDir, liveRuns),
+        stallConfigs: config.stall,
+        panelOptions: { refreshMs: config.panel?.refreshMs },
+      },
+      host,
+      token,
+    }
+
+    let panel
+    try {
+      panel = await createLiveServer({ ...serverOptions, port: wanted })
+    } catch (err) {
+      // 端口被占用不打断任何事：自动退回空闲端口，继续开工
+      if (flags.port !== undefined) {
+        console.error(`[wolf] 端口 ${wanted} 起不来（${err?.code || err?.message}），改用空闲端口`)
+      }
+      panel = await createLiveServer({ ...serverOptions, port: 0 })
+    }
+
+    const liveUrl = `http://${host}:${panel.port}/wolfpack/live`
+    if (flags.json) {
+      console.log(JSON.stringify({ url: panel.url, live_url: liveUrl, port: panel.port, host }, null, 2))
+    } else {
+      console.log(`🐺 狼群实时面板已启动（只读、零 token）
+面板：      ${panel.url}
+实时 JSON： ${liveUrl}
+停滞台账：  ${config.stallLogPath}
+两个工人（agy / claude）各自一节：运行、步骤、会话流水、停滞监控、token 累计。
+按 Ctrl+C 停止。`)
+    }
+
+    let closing = false
+    const shutdown = async () => {
+      if (closing) return
+      closing = true
+      try {
+        await panel.close()
+      } catch {}
+      process.exit(0)
+    }
+    process.on('SIGINT', () => { shutdown() })
+    process.on('SIGTERM', () => { shutdown() })
+    // 保持进程存活直到收到信号
+    return
   }
 
   console.error(`[wolf] 未知子命令 "${command}"，运行 node bin/wolf.mjs --help 查看用法`)

@@ -1,26 +1,39 @@
 #!/usr/bin/env node
 
 import { loadConfig } from '../src/config.mjs'
-import { killRun, runDelegateTask } from '../src/delegate.mjs'
+import { killRun, liveRuns, runDelegateTask } from '../src/delegate.mjs'
 import { renderDigest, renderStatus } from '../src/digest.mjs'
 import { defaultActiveRuns, RunsLedger } from '../src/ledger.mjs'
 import { listLiveRecords } from '../src/live.mjs'
+import {
+  buildLivePayload,
+  createLiveServer,
+  enforcePayloadBounds,
+  mergeLiveRecords,
+  renderLiveSummary,
+} from '../src/live-route.mjs'
+// 运行时注入：导入 Node 运行时实现即注入（见 src/runtime/node.mjs 末尾），
+// 核心层不 import 宿主模块。DSH 一类宿主换注入 src/runtime/dsh.mjs。
+import { createNodeStallNotifier } from '../src/runtime/node.mjs'
 import { renderTeamDigest, runTeamTasks } from '../src/team.mjs'
 
 const config = loadConfig()
+// 停滞报警的宿主外设：控制台 + 台账（src/delegate.mjs 的 reportStall），
+// 桌面通知默认关（WOLFPACK_STALL_TOAST=1 才弹）。
+config.stallToastNotifier = createNodeStallNotifier({ toast: config.stallToast === true })
 const ledger = new RunsLedger(config.ledgerPath, config)
 
 const TOOLS = [
   {
     name: 'wolf_delegate',
-    description: '把一件自洽、可机械验收的活交给 agy（Antigravity CLI）执行，并把实测证据带回。注意：agy 看不到本会话，task 必须完整独立。同一个 task_id 的多轮会续用 agy 会话；换不相关的事必须换 task_id。同一个 task_id 不允许并发。',
+    description: '把一件自洽、可机械验收的活交给工人执行，并把实测证据带回。工人由狼群全自动挑选（agy 与 claude 装了谁用谁、两个都装则自动轮流），无需也无法指定，不要就工人选择征求用户同意。注意：工人看不到本会话，task 必须完整独立。同一个 task_id 的多轮会续用同一工人的会话（沿用会话才不浪费上下文）；换不相关的事必须换 task_id。同一个 task_id 不允许并发。',
     inputSchema: {
       type: 'object',
       properties: {
         task_id: { type: 'string', description: '任务稳定标识（如 fix-build、add-test）' },
-        task: { type: 'string', description: '完整独立任务书：目标、交付物、以及怎样算完成。agy 看不到本会话，task 必须完整独立。' },
+        task: { type: 'string', description: '完整独立任务书：目标、交付物、以及怎样算完成。工人看不到本会话，task 必须完整独立。' },
         verify: { type: 'array', items: { type: 'string' }, description: '验收命令列表（在工作目录执行，如 npm test）' },
-        verify_baseline: { type: 'array', items: { type: 'string' }, description: '派活前必须失败的基线检查命令。已有命令通过则直接判 stale 且不启动 agy。' },
+        verify_baseline: { type: 'array', items: { type: 'string' }, description: '派活前必须失败的基线检查命令。已有命令通过则直接判 stale 且不启动工人。' },
         fresh: { type: 'boolean', description: '是否强制冷启动、丢弃上一轮会话' },
         model: { type: 'string', description: '覆盖本次运行的模型（如 claude-opus-4-6-thinking）' },
       },
@@ -29,7 +42,7 @@ const TOOLS = [
   },
   {
     name: 'wolf_status',
-    description: '只读台账，回答「我派过哪些活、各自到哪了」。注意：纯只读，绝不启动 agy、不跑验收、不消耗配额。给出轮数、最后 verdict、最后 stop_reason、累计 token 与 conversation_id 状态。',
+    description: '只读台账，回答「我派过哪些活、各自到哪了」。注意：纯只读，绝不启动工人、不跑验收、不消耗配额。给出轮数、最后 verdict、最后 stop_reason、累计 token 与 conversation_id 状态。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -51,7 +64,7 @@ const TOOLS = [
   },
   {
     name: 'wolf_team',
-    description: '一次调用受控并发派多个持久 agy 工人，并返回有界的汇总。注意：agy 看不到本会话，task 必须完整独立。多个任务必须互相独立，同一个调用内严禁重复 task_id。',
+    description: '一次调用受控并发派多个持久工人，并返回有界的汇总。工人由狼群全自动挑选（agy 与 claude 都在时自动轮流，天然把并发摊到两个工人上），无需也无法指定。注意：工人看不到本会话，task 必须完整独立。多个任务必须互相独立，同一个调用内严禁重复 task_id。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -62,7 +75,7 @@ const TOOLS = [
             type: 'object',
             properties: {
               task_id: { type: 'string', description: '任务稳定标识' },
-              task: { type: 'string', description: '完整独立任务书。agy 看不到本会话，task 必须完整独立。' },
+              task: { type: 'string', description: '完整独立任务书。工人看不到本会话，task 必须完整独立。' },
               verify: { type: 'array', items: { type: 'string' }, description: '验收命令列表' },
               verify_baseline: { type: 'array', items: { type: 'string' }, description: '基线命令列表' },
               fresh: { type: 'boolean', description: '是否强制冷启动' },
@@ -79,10 +92,73 @@ const TOOLS = [
       required: ['tasks'],
     },
   },
+  {
+    name: 'wolf_live',
+    description: '只读实时状态：正在跑什么、哪个工人在跑、跑到第几步、停滞监控现在什么状态。**按工人分区展示**（agy 与 claude 各一节，互不覆盖）。纯只读、零 token、绝不启动工人；想看图形界面就调 wolf_panel 拿面板地址。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', description: '最多返回几个运行（1 到 50，默认 8；两个工人会被轮转取样，保证都不缺席）' },
+      },
+    },
+  },
+  {
+    name: 'wolf_panel',
+    description: '打开本地实时面板（只读 HTTP，默认只监听 127.0.0.1）。面板把 agy 与 claude 两个工人分开展示：各自的运行、步骤、会话流水、停滞监控与 token 累计，每 3 秒自刷新。返回面板 URL 与实时 JSON 路由，重复调用不会重复起服务。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        port: { type: 'integer', description: '可选：覆盖面板端口（默认取配置 panelPort / WOLFPACK_PANEL_PORT，默认 8787；端口被占用时自动改用空闲端口）' },
+      },
+    },
+  },
 ]
 
 function sendJsonRpc(msg) {
   process.stdout.write(JSON.stringify(msg) + '\n')
+}
+
+/**
+ * 组装实时面板所需的只读数据源。
+ *
+ * 面板与 MCP 是两个进程：进程内的 liveRuns 带活的 stallMonitor，
+ * 磁盘登记文件（mergeLiveRecords）补上别的进程派发的任务，两者按 task_id 合并。
+ *
+ * @param {object} [extra]
+ * @returns {Promise<object>}
+ */
+async function liveDataSources(extra = {}) {
+  return {
+    ledger,
+    activeRuns: defaultActiveRuns,
+    liveHandles: await mergeLiveRecords(config.rawDir, liveRuns),
+    stallConfigs: config.stall,
+    panelOptions: { refreshMs: config.panel?.refreshMs },
+    ...extra,
+  }
+}
+
+/** @type {{server: object, url: string, port: number, close: () => Promise<void>}|undefined} */
+let panelServer
+
+/**
+ * 起（或复用）本地实时面板服务器。端口被占用时自动退回空闲端口——
+ * 全程不问用户，也不因为端口冲突就失败。
+ *
+ * @param {number} [port]
+ * @returns {Promise<{server: object, url: string, port: number, close: () => Promise<void>}>}
+ */
+async function ensurePanelServer(port) {
+  if (panelServer !== undefined) return panelServer
+  const host = config.panel?.host ?? '127.0.0.1'
+  const wanted = Number.isInteger(port) && port > 0 && port < 65536 ? port : (config.panel?.port ?? 8787)
+  const options = { config: await liveDataSources(), host, token: config.panel?.token }
+  try {
+    panelServer = await createLiveServer({ ...options, port: wanted })
+  } catch {
+    panelServer = await createLiveServer({ ...options, port: 0 })
+  }
+  return panelServer
 }
 
 function sendResponse(id, result) {
@@ -182,6 +258,7 @@ async function handleRequest(req) {
           const used = s.totalTokens || 0
           return {
             task_id: s.taskId,
+            worker: s.worker,
             round: s.round,
             last_verdict: s.lastVerdict,
             last_stop_reason: s.lastStopReason,
@@ -246,6 +323,30 @@ async function handleRequest(req) {
           content: [{ type: 'text', text: digest }],
           isError: hasFailure,
           raw: res,
+        })
+      }
+
+      if (toolName === 'wolf_live') {
+        const limit = Number.isFinite(toolArgs.limit) ? toolArgs.limit : undefined
+        const payload = await buildLivePayload(await liveDataSources(limit === undefined ? {} : { maxRuns: limit }))
+        return sendResponse(id, {
+          content: [{ type: 'text', text: renderLiveSummary(payload) }],
+          raw: JSON.parse(enforcePayloadBounds(payload)),
+        })
+      }
+
+      if (toolName === 'wolf_panel') {
+        const panel = await ensurePanelServer(toolArgs.port)
+        const liveUrl = `http://${config.panel?.host ?? '127.0.0.1'}:${panel.port}/wolfpack/live`
+        const text = [
+          '🐺 狼群实时面板已就绪（只读、零 token，两个工人分开展示）',
+          `面板：${panel.url}`,
+          `实时 JSON：${liveUrl}`,
+          '面板把 agy 与 claude 各自的运行、步骤、会话流水、停滞监控与 token 累计分开显示，每 3 秒自刷新；关掉 MCP 进程面板即停止。',
+        ].join('\n')
+        return sendResponse(id, {
+          content: [{ type: 'text', text }],
+          raw: { url: panel.url, live_url: liveUrl, port: panel.port },
         })
       }
 

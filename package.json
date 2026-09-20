@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Standalone, zero-dependency, portable wolfpack delegation engine for OpenAI Codex CLI and Antigravity CLI",
+  "description": "Standalone, zero-dependency, portable wolfpack delegation engine for OpenAI Codex CLI with Antigravity CLI and Claude Code CLI workers",
   "bin": {
     "wolf": "./bin/wolf.mjs",
     "wolf-mcp": "./bin/wolf-mcp.mjs"
