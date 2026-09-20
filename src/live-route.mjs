@@ -7,6 +7,7 @@ import { listLiveRecords } from './live.mjs'
 import { renderPanelHtml } from './panel-html.mjs'
 import { clearTranscriptCache, readTranscriptTail, resolveTranscriptPath } from './live-transcript.mjs'
 import { STALL_WORKERS, claudeProjectSlug, formatStallSummary, resolveStallConfigs } from './stall.mjs'
+import { healthConfigOf, readHealthState, snapshotHealth } from './worker/health.mjs'
 
 /**
  * 狼群实时路由（宿主无关的构建逻辑 + 一个本地 HTTP 实现）。
@@ -235,6 +236,9 @@ export async function buildLivePayload(config = {}) {
   }
   const ledgerMap = new Map(ledgerTasks.map(t => [t.taskId, t]))
   const stallConfigs = config.stallConfigs ?? resolveStallConfigs({ config })
+  // 工人健康：只读台账，面板与 CLI 都能看到「谁在冷却、还剩多久」
+  const healthConfig = healthConfigOf(config)
+  const healthState = await readHealthState(config.workerHealth?.filePath)
 
   // ── 1. 运行中的任务 ───────────────────────────────────────────────
   const runningByWorker = new Map(STALL_WORKERS.map(w => [w, []]))
@@ -372,6 +376,9 @@ export async function buildLivePayload(config = {}) {
       store_root: stallConfigs?.[worker]?.storeRoot ?? stallConfigs?.[worker]?.store_root,
       stall_window_ms: stallConfigs?.[worker]?.windowMs ?? stallConfigs?.[worker]?.window_ms,
       stall: running.find(r => r.stall !== undefined)?.stall ?? null,
+      health: healthConfig.enabled === false
+        ? { worker, benched: false, disabled: true }
+        : snapshotHealth(healthState, worker, now),
       counts: {
         running: running.length,
         idle: idle.length,

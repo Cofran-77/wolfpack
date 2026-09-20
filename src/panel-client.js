@@ -294,6 +294,28 @@
     stallBox.textContent = '⏳ 停滞监控（' + worker.worker + '）：' + stall.text
     section.appendChild(stallBox)
 
+    /* 工人健康：坏过的工人会被自动冷却，面板上直接写清楚还剩多久恢复 */
+    var health = worker.health
+    if (health) {
+      var healthBox = document.createElement('div')
+      if (health.disabled === true) {
+        healthBox.className = 'stall off'
+        healthBox.textContent = '🩺 工人健康：已关闭（WOLFPACK_WORKER_HEALTH=off）'
+      } else if (health.benched === true) {
+        healthBox.className = 'stall warn'
+        healthBox.textContent = '⛔ 冷却中（' + (health.last_reason || '故障') + '）· 约剩 '
+          + formatDuration(health.remaining_ms) + ' 自动恢复 · 累计失败 '
+          + (health.total_failures || 0) + ' 次'
+      } else if (health.consecutive_failures > 0) {
+        healthBox.className = 'stall unknown'
+        healthBox.textContent = '🩺 连续失败 ' + health.consecutive_failures + ' 次（' + (health.last_reason || '故障') + '）· 还没到冷却阈值'
+      } else {
+        healthBox.className = 'stall ok'
+        healthBox.textContent = '🩺 工人健康：正常'
+      }
+      section.appendChild(healthBox)
+    }
+
     var list = document.createElement('div')
     list.className = 'runs'
     var runs = (worker.running || []).concat(worker.idle || [])

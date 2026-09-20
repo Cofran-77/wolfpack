@@ -1,6 +1,8 @@
 import { existsSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 
+import { matchCapacity } from './faults.mjs'
+
 /** 默认输出 JSON Schema 约束 */
 export const DEFAULT_AGY_SCHEMA = {
   type: 'object',
@@ -50,12 +52,11 @@ export function normalizeRelPath(p, cwd) {
  * @returns {boolean}
  */
 export function isCapacityError(parsed, raw, stderr) {
-  const pattern = /no capacity available/i
-  if (typeof parsed?.error === 'string' && pattern.test(parsed.error)) return true
-  if (typeof parsed?.response === 'string' && pattern.test(parsed.response)) return true
-  if (typeof raw === 'string' && pattern.test(raw)) return true
-  if (typeof stderr === 'string' && pattern.test(stderr)) return true
-  return false
+  const texts = []
+  if (typeof parsed?.error === 'string') texts.push(parsed.error)
+  if (typeof parsed?.response === 'string') texts.push(parsed.response)
+  if (typeof stderr === 'string') texts.push(stderr)
+  return matchCapacity({ texts, raw })
 }
 
 /**

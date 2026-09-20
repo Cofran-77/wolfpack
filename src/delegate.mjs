@@ -8,6 +8,8 @@ import { isProcessAlive, readLiveRecord, removeLiveRecord, writeLiveRecord } fro
 import { killProcessTree, spawnProcess } from './spawn.mjs'
 import { defaultShellArgv, evaluateBaseline, runVerify } from './verify.mjs'
 import { getWorker, resolveWorkerSelection } from './worker/index.mjs'
+import { classifyFaultKind } from './worker/faults.mjs'
+import { readHealthState, recordWorkerOutcome, snapshotHealth, updateHealthState } from './worker/health.mjs'
 import { getDefaultRuntime, resolveRuntime, setDefaultRuntime } from './runtime/registry.mjs'
 import { appendStallRecord, createStallMonitor, resolveStallConfig } from './stall.mjs'
 
@@ -417,7 +419,11 @@ export async function runDelegateTask({
   // 工人全自动挑选：不问用户、也不接受调用方点名。
   // 先读同 task_id 的上一轮记录：上一轮的工人若仍可用就沿用（会话 ID 只在各自 CLI 内有效）。
   const previous = theLedger ? await theLedger.latest(taskId) : undefined
-  const selection = resolveWorkerSelection({ config, previousWorker: previous?.worker })
+  // 工人健康台账：谁刚坏过、冷却到什么时候。只影响「挑谁」，不影响任务判定。
+  const healthPath = config.workerHealth?.filePath
+  const healthEnabled = config.workerHealth?.enabled !== false && typeof healthPath === 'string' && healthPath !== ''
+  const healthState = healthEnabled ? await readHealthState(healthPath) : undefined
+  const selection = resolveWorkerSelection({ config, previousWorker: previous?.worker, health: healthState })
   const worker = getWorker(selection.name)
 
   const baselineCommands = normalizeCommands(args.verify_baseline)
@@ -676,6 +682,36 @@ export async function runDelegateTask({
     const report = parsed?.structuredReport?.summary || parsed?.response || ''
     const stallSnapshot = stallMonitor ? stallMonitor.snapshot() : undefined
 
+    // ── 8.5 工人健康记账 ───────────────────────────────────────────────
+    // 只回答「下一轮还派不派它」：工人自己坏（没输出/超时/额度耗尽/未登录）当轮就冷却，
+    // 普通失败累计到阈值才冷却；用户自己取消与基线跳过不改台账。
+    const faultTexts = [
+      typeof parsed?.error === 'string' ? parsed.error : undefined,
+      typeof parsed?.response === 'string' ? parsed.response.slice(0, 500) : undefined,
+      typeof stderrText === 'string' ? stderrText.slice(0, 2000) : undefined,
+    ].filter(text => typeof text === 'string' && text !== '')
+    const faultKind = classifyFaultKind({
+      stopReason,
+      timedOut: outcome.timedOut === true,
+      cancelled: outcome.aborted === true,
+      outputEmpty: stdoutText.trim() === '',
+      status: typeof parsed?.apiStatus === 'number' ? parsed.apiStatus : undefined,
+      texts: faultTexts,
+      raw: stdoutText,
+    })
+    const outcomeKind = stopReason === 'completed' ? 'success' : (faultKind ?? 'neutral')
+    let workerHealth = { worker: worker.name, benched: false }
+    if (healthEnabled) {
+      const recorded = await updateHealthState(healthPath, state => recordWorkerOutcome(state, {
+        worker: worker.name,
+        kind: outcomeKind,
+        stopReason,
+        diagnostic: diagnostic ?? classified.diagnostic,
+        config,
+      }))
+      workerHealth = snapshotHealth(recorded, worker.name)
+    }
+
     // ── 9. 台账记录 ────────────────────────────────────────────────────
     if (theLedger) {
       await theLedger.record({
@@ -722,6 +758,10 @@ export async function runDelegateTask({
       conversation_id: nextSessionId,
       subagents_spawned: typeof parsed?.subagents?.spawned === 'number' ? parsed.subagents.spawned : undefined,
       stall: stallSnapshot,
+      worker_health: workerHealth,
+      ...(selection.benched_skipped === undefined ? {} : { benched_workers: selection.benched_skipped }),
+      ...(selection.all_benched === true ? { health_note: 'all-benched' } : {}),
+      ...(selection.benched_ignored === true ? { health_note: 'explicit-ignores-bench' } : {}),
       raw_path: rawPath,
       duration_ms: durationMs,
       tool_deadline_ms: config.taskTimeoutMs || undefined,

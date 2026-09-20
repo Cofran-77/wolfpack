@@ -18,6 +18,15 @@
   "unknownUsageRoundCap": 20,
   "shell": null,
   "concurrency": 2,
+  "workerHealth": {
+    "enabled": true,
+    "failThreshold": 2,
+    "cooldownMs": 600000,
+    "capacityCooldownMs": 300000,
+    "timeoutCooldownMs": 600000,
+    "authCooldownMs": 1800000,
+    "filePath": null
+  },
   "stall": {
     "windowSeconds": 300,
     "windowSecondsByWorker": {

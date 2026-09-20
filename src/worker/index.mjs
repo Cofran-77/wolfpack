@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path'
 import { findInPath } from '../verify.mjs'
 import { agyWorker } from './agy.mjs'
 import { claudeWorker } from './claude.mjs'
+import { snapshotHealth } from './health.mjs'
 
 /** 「全自动」标记：不指定具体工人时，装了谁就用谁；两个都装则轮流派活 */
 export const AUTO_WORKER = 'auto'
@@ -132,9 +133,11 @@ export function isWorkerAvailable(name, config, { env = process.env, find = find
  * @param {string} [params.previousWorker] - 同一 task_id 上一轮的工人
  * @param {Record<string, string|undefined>} [params.env]
  * @param {Function} [params.find]
- * @returns {{ name: string, reason: string }}
+ * @param {object} [params.health] - 工人健康台账（可选）；不传则完全按老规则挑选
+ * @param {number} [params.now] - 用于判定冷却是否到期（测试可注入）
+ * @returns {{ name: string, reason: string, benched?: object, benched_skipped?: object[], all_benched?: boolean }}
  */
-export function resolveWorkerSelection({ config, previousWorker, env = process.env, find = findInPath } = {}) {
+export function resolveWorkerSelection({ config, previousWorker, env = process.env, find = findInPath, health, now = Date.now() } = {}) {
   const known = [...registry.keys()]
   const eligible = listWorkers().filter(w => isWorkerAvailable(w.name, config, { env, find }))
 
@@ -153,20 +156,54 @@ export function resolveWorkerSelection({ config, previousWorker, env = process.e
     )
   }
 
+  // 健康台账只影响「挑谁」，不影响任务判定。台账缺失/损坏都由 readHealthState 兜住。
+  // 健康机制被显式关掉时，连台账都不看：完全退回老规则
+  const healthUsable = health !== undefined && health !== null && config?.workerHealth?.enabled !== false
+  const benchOf = name => (healthUsable === false
+    ? { worker: name, benched: false }
+    : snapshotHealth(health, name, now))
+  const benchedSkipped = eligible.map(w => benchOf(w.name)).filter(b => b.benched === true)
+  const benchExtras = benchedSkipped.length > 0 ? { benched_skipped: benchedSkipped } : {}
+
   if (prefer !== undefined) {
-    if (eligible.some(w => w.name === prefer)) return { name: prefer, reason: 'explicit' }
+    if (eligible.some(w => w.name === prefer)) {
+      // 显式点名 = 用户意志：即使它在冷却中也照用，但如实标注，避免「说了不用还用」的错觉
+      const bench = benchOf(prefer)
+      return {
+        name: prefer,
+        reason: 'explicit',
+        ...(bench.benched === true ? { benched: bench, benched_ignored: true } : {}),
+      }
+    }
     const fallback = eligible[rotationCursor++ % eligible.length]
     return { name: fallback.name, reason: `fallback(${prefer}-unavailable)` }
   }
 
-  if (eligible.length === 1) return { name: eligible[0].name, reason: 'only-available' }
+  // 冷却中的工人先靠边站：这就是「CLI 装着但用不了」时不再每轮都撞同一堵墙的机制
+  const healthy = eligible.filter(w => benchOf(w.name).benched !== true)
 
-  if (typeof previousWorker === 'string' && eligible.some(w => w.name === previousWorker)) {
-    return { name: previousWorker, reason: 'continuation' }
+  if (healthy.length === 0) {
+    // 两个都在冷却：硬试最早恢复的那个，绝不空转，并在 digest 里说清楚
+    const pick = eligible
+      .slice()
+      .sort((a, b) => (benchOf(a.name).benched_until ?? 0) - (benchOf(b.name).benched_until ?? 0))[0]
+    return {
+      name: pick.name,
+      reason: `all-benched(${pick.name})`,
+      benched: benchOf(pick.name),
+      all_benched: true,
+      ...benchExtras,
+    }
   }
 
-  const pick = eligible[rotationCursor++ % eligible.length]
-  return { name: pick.name, reason: 'rotation' }
+  if (healthy.length === 1) return { name: healthy[0].name, reason: 'only-available', ...benchExtras }
+
+  if (typeof previousWorker === 'string' && healthy.some(w => w.name === previousWorker)) {
+    return { name: previousWorker, reason: 'continuation', ...benchExtras }
+  }
+
+  const pick = healthy[rotationCursor++ % healthy.length]
+  return { name: pick.name, reason: 'rotation', ...benchExtras }
 }
 
 export { agyWorker, claudeWorker }

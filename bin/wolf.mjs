@@ -3,8 +3,10 @@
 import { readFileSync } from 'node:fs'
 import { loadConfig, stripBom } from '../src/config.mjs'
 import { killRun, liveRuns, runDelegateTask } from '../src/delegate.mjs'
-import { renderDigest, renderStatus } from '../src/digest.mjs'
+import { renderDigest, renderHealthReport, renderStatus } from '../src/digest.mjs'
 import { defaultActiveRuns, RunsLedger } from '../src/ledger.mjs'
+import { listWorkers } from '../src/worker/index.mjs'
+import { healthConfigOf, readHealthState, resetWorkerHealth, snapshotHealth, updateHealthState } from '../src/worker/health.mjs'
 import { listLiveRecords } from '../src/live.mjs'
 import {
   buildLivePayload,
@@ -85,6 +87,10 @@ function parseArgs(argv) {
       flags.token = argv[++i]
     } else if (arg.startsWith('--token=')) {
       flags.token = arg.slice('--token='.length)
+    } else if (arg === '--reset' && i + 1 < argv.length) {
+      flags.reset = argv[++i]
+    } else if (arg.startsWith('--reset=')) {
+      flags.reset = arg.slice('--reset='.length)
     }
   }
 
@@ -116,9 +122,17 @@ async function main() {
   team       并发小队委派
   live       打印一次实时状态（纯只读，两个工人分节展示）
   panel      起本地实时面板（只读 HTTP，默认 127.0.0.1:8787）
+  health     查看/清除工人冷却（某工人坏过就先冷落它，下一轮自动改派另一个）
 
 工人默认全自动挑选：装了谁就用谁，agy 与 claude 都在时自动轮流派活；
 需要固定工人时设置 WOLFPACK_WORKER=agy|claude（或写进 wolfpack.config.json 的 worker）。
+
+工人健康（自动冷却，永不空转）：
+  wolf health [--json]               # 谁在冷却、冷却到什么时候
+  wolf health --reset claude|agy|all # 手动清冷却（我修好了，立刻重试）
+  工人自身故障（没输出/超时/额度或中转池子耗尽/未登录）当轮即冷却；
+  普通失败累计到 WOLFPACK_WORKER_FAIL_THRESHOLD（默认 2 次）才冷却。
+  关掉这套机制：WOLFPACK_WORKER_HEALTH=off
 
 实时面板与停滞监控（两个工人各一套）：
   wolf panel [--port 8787] [--host 127.0.0.1] [--token <口令>]
@@ -222,6 +236,69 @@ async function main() {
       process.exit(0)
     } catch (err) {
       console.error('[wolf] status 失败:', err?.message || err)
+      process.exit(1)
+    }
+  }
+
+  if (command === 'health') {
+    const healthPath = config.workerHealth?.filePath
+    const healthConfig = healthConfigOf(config)
+    const knownWorkers = listWorkers().map(w => w.name)
+
+    if (flags.reset !== undefined) {
+      const target = String(flags.reset).trim()
+      if (target !== 'all' && !knownWorkers.includes(target)) {
+        console.error(`[wolf] health --reset 只接受 ${knownWorkers.join(' | ')} | all，收到 "${target}"`)
+        process.exit(1)
+      }
+      if (config.workerHealth?.enabled === false) {
+        console.log('[wolf] 工人健康机制已关闭（WOLFPACK_WORKER_HEALTH=off），没有冷却需要清除。')
+        process.exit(0)
+      }
+      try {
+        const next = await updateHealthState(healthPath, state => resetWorkerHealth(state, target))
+        console.log(`[wolf] 已清除 ${target === 'all' ? '全部工人' : target} 的冷却与失败计数`)
+        console.log(renderHealthReport({
+          workers: knownWorkers.map(name => snapshotHealth(next, name)),
+          file_path: healthPath,
+          enabled: healthConfig.enabled,
+          fail_threshold: healthConfig.failThreshold,
+        }))
+        process.exit(0)
+      } catch (err) {
+        console.error('[wolf] health --reset 失败:', err?.message || err)
+        process.exit(1)
+      }
+    }
+
+    try {
+      const state = await readHealthState(healthPath)
+      const workers = knownWorkers.map(name => snapshotHealth(state, name))
+      if (flags.json) {
+        console.log(JSON.stringify({
+          enabled: healthConfig.enabled,
+          file_path: healthPath,
+          fail_threshold: healthConfig.failThreshold,
+          cooldowns_ms: {
+            failure: healthConfig.cooldownMs,
+            capacity: healthConfig.capacityCooldownMs,
+            timeout: healthConfig.timeoutCooldownMs,
+            auth: healthConfig.authCooldownMs,
+          },
+          updated_at: state.updatedAt || undefined,
+          workers,
+        }, null, 2))
+      } else {
+        console.log(renderHealthReport({
+          workers,
+          file_path: healthPath,
+          enabled: healthConfig.enabled,
+          fail_threshold: healthConfig.failThreshold,
+        }))
+      }
+      process.exit(0)
+    } catch (err) {
+      console.error('[wolf] health 失败:', err?.message || err)
       process.exit(1)
     }
   }

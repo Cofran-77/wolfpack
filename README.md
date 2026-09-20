@@ -13,12 +13,13 @@ Wolfpack 把「派活、执行、验收、记账」串成一条流水线：Codex
 - **两个工人都能用**：`agy` 与 `claude` 装了哪个就用哪个，两个都装则自动轮流派活，调用方无法也不需要在调用时挑工人。会话按工人各自延续（agy `--conversation` / claude `--resume`），换工人必然冷启动。
 - **实时看得见**：`wolf live` 一条命令看现在跑到哪一步，`wolf panel` 起本地只读面板，把两个工人分节展示——各自的运行、步骤、会话流水、停滞监控与 token 累计，每 3 秒自刷新，不消耗任何模型额度。
 - **停滞有报警**：两个工人各有一套监控，分别盯着自己的会话文件是否还在写；5/10/15 分钟没有进展时各报一次，随后闭嘴，**只报警、永不自动终止**。
+- **坏工人会被冷落**：没输出 / 超时挂住 / 额度或 API 中转池子耗尽 / 未登录这类「工人自己的毛病」会在当轮被识别，该工人进入冷却（5–30 分钟，视原因而定），下一轮自动改派另一个工人；冷却到期自动恢复，也支持一条命令手动解除。
 - **宿主可替换**：核心层不绑定运行环境，进程派生统一走 `src/runtime/` 注入的实现——自带 Node 版，DSH 一类宿主可以换成自己的运行时。
 
 ### 它不做什么
 
 - 不提供沙箱或任务目录隔离：工人在你给的目录里直接读写文件、执行命令，权限范围由你决定。
-- 不会因为「看起来卡住了」就替你杀掉进程，也不会替你把失败的任务重跑一遍。
+- 不会因为「看起来卡住了」就替你杀掉进程，也不会替你把失败的任务重跑一遍（它只会把坏掉的工人暂时冷落、改派另一个，见「工人健康与自动冷却」）。
 - 不托管工人的登录、配额与网络代理，这三件事仍由 `agy` / `claude` 自身的配置决定。
 - 不替你做判断：任务边界、验收标准、结果可不可信，最终仍由你确认。
 
@@ -28,7 +29,7 @@ Wolfpack 把「派活、执行、验收、记账」串成一条流水线：Codex
 | --- | --- | --- |
 | Codex（队长） | 拆任务、写自包含任务书、给验收命令、审查证据 | 手写大段实现、把整库上下文搬进自己的会话 |
 | `agy` / `claude`（工人） | 在自己的会话里读代码、改文件、跑命令、回报结构化结果 | 决定任务边界、判断自己的产出是否可信 |
-| Wolfpack（引擎） | 基线闸门、独占锁、产物差集、验收执行、台账与实时面板 | 替工人思考、替你拍板 |
+| Wolfpack（引擎） | 基线闸门、独占锁、产物差集、验收执行、台账、实时面板与工人健康冷却 | 替工人思考、替你拍板 |
 | 你（负责人） | 定目标、定权限范围、看结果 | —— |
 
 ## 为什么要用它：把贵的那一半用在判断上
@@ -61,6 +62,7 @@ Codex 和工人 CLI 都在「聊天」里干活，但成本结构完全不同。
 - **零依赖、离线可测**：只用 Node 原生模块，`node tests/run.mjs` 内置几十项用例，全程不调用真实工人、不消耗额度。
 - **实时面板**：只读 HTTP 面板（`/wolfpack/panel`）把 `agy` 与 `claude` **分开展示**：各自的运行、当前步骤、会话流水、停滞监控与 token 累计，每 3 秒自刷新，零 token。
 - **停滞监控**：两个工人**各有一套**监控，分别盯着自己的会话文件（agy 看 `~/.gemini/antigravity-cli`，claude 看 `~/.claude/projects`）。窗口 5/10/15 分钟各报一次，**只报警、永不自动终止**。
+- **工人健康与自动冷却**：按故障类型给两个工人各自记账——工人自身故障（没输出 / 超时 / 额度与容量不足，含 API 中转池子的 `402`、`无可用渠道`、`额度不足` 等 / 未登录与鉴权失败）当轮即冷却，普通失败连续 2 次才冷却；下一轮自动改派另一个工人，两个都在冷却时仍硬试最早恢复的那个，永不空转。`wolf health` 看状态，`wolf health --reset claude|agy|all` 手动解除。
 - **运行时注入**：核心层不绑定任何宿主，进程派生统一走 `src/runtime/` 注入的运行时（Node 自带实现，DSH 等宿主可换成自己的）。
 
 适合目标明确、可以独立执行且有验收方式的开发任务。有依赖关系的任务应按顺序执行；多个任务同时修改同一文件时，需要调用方协调。
@@ -124,8 +126,9 @@ node bin/wolf.mjs status --json
 
 ```sh
 node --version                     # 需要 20 或更高
-node tests/run.mjs                 # 离线用例：基线、判定、续跑、并发、面板、停滞监控
+node tests/run.mjs                 # 离线用例：基线、判定、续跑、并发、面板、停滞监控、工人健康冷却
 node bin/wolf.mjs status --json    # 只读台账；一次活都没派过也会正常返回空列表
+node bin/wolf.mjs health           # 只读工人健康：谁在冷却、还剩多久
 ```
 
 接好 MCP 之后，最省事的用法是直接在 Codex 里描述任务并给出验收命令，例如「用 wolfpack 给这个仓库的 parser 补空输入回归测试，验收命令是 npm test」。队长会把它整理成自包含任务书，调用 `wolf_delegate` 派出去，再把「队员声称」和「我已核实」两段一起带回来。
@@ -218,6 +221,8 @@ node "/absolute/path/to/wolfpack-codex/bin/wolf.mjs" delegate --task-id fix-pars
 
 **工人由 Wolfpack 全自动挑选，无需也无法在调用时指定**：只装了一个就用那一个；两个都装则交替派活，让 `agy` 与 `claude` 都真正承担执行；同一个 `task_id` 的上一轮工人仍可用时会沿用以续用会话。需要固定工人时改配置（`"worker": "agy"` 或 `"worker": "claude"`，该工人不可用时自动回退到另一个）。
 
+**坏掉的工人会被自动冷落**：某轮出现工人自身故障（没输出 / 超时 / 额度或中转池子耗尽 / 未登录）时，它会立刻进入冷却，下一次派活自动换另一个工人，并照样把「谁被跳过、为什么、还剩多久」写进 digest；详见「工人健康与自动冷却」一节。
+
 常用参数：
 
 | MCP 参数 | CLI 参数 | 说明 |
@@ -294,6 +299,37 @@ node "/absolute/path/to/wolfpack-codex/bin/wolf.mjs" panel --port 8790 --token <
 
 **监控只报警、永不终止任何进程**：要不要停由你决定（Esc / 停会话 / `wolf kill`）。报警只是提示，也可能是这个工人正在长时间思考或跑一条很慢的命令。
 
+### 工人健康与自动冷却（坏工人不会每轮都撞）
+
+「CLI 装着、但没登录 / 接口报错 / API 中转池子额度耗尽 / 进程挂着不说话」是最难缠的状态：它看起来可用，于是每一轮都被挑中、每一轮都失败一遍。狼群为此维护一份**工人健康台账**，把这类故障识别出来，先把该工人冷落一段时间，下一轮直接改派另一个工人。
+
+故障分两类，处理力度不同：
+
+| 类别 | 判据 | 处理 |
+| --- | --- | --- |
+| **工人自身故障** | 没有输出 / 超时挂住 / 额度与容量不足（含中转池子 `402`、`429`、`insufficient_user_quota`、`无可用渠道`、`额度不足` 等）/ 未登录或鉴权失败（`401`、`invalid API key` 等） | **当轮立即冷却**，不等累计 |
+| **普通失败** | 工人回了话、但自报失败（`stop_reason=error`） | 连续失败达到 `WOLFPACK_WORKER_FAIL_THRESHOLD`（默认 2 次）才冷却 |
+
+冷却时长按故障类型区分：容量/额度类 5 分钟（等池子回血）、超时与普通失败 10 分钟、未登录/鉴权失败 30 分钟（需要人去处理）。**到期自动恢复**，不需要手动干预。被跳过的工人会在 digest 里写明「⛔ 谁在冷却、原因、还剩多久、本轮改派给了谁」，不会闷声换人。
+
+三条铁律：
+
+1. **永不空转**：两个工人都在冷却时，仍会挑最早恢复的那个硬试一次，并在 digest 里说明；
+2. **显式点名优先**：配置里写了 `WOLFPACK_WORKER=claude` 就照用，冷却会被忽略（但会标注）；
+3. **只影响挑选，不影响判定**：任务本身跑得好不好，仍然只由产物快照与机械验收说话。
+
+```sh
+# 看谁在冷却、冷却到什么时候（纯只读）
+node "/absolute/path/to/wolfpack-codex/bin/wolf.mjs" health
+node "/absolute/path/to/wolfpack-codex/bin/wolf.mjs" health --json
+
+# 我修好了（重新登录 / 换 key / 池子充了钱），立刻解除冷却
+node "/absolute/path/to/wolfpack-codex/bin/wolf.mjs" health --reset claude
+node "/absolute/path/to/wolfpack-codex/bin/wolf.mjs" health --reset all
+```
+
+`wolf_status` 与实时面板（`/wolfpack/live`、`/wolfpack/panel`）也各自展示两个工人的健康状态：面板在每个工人分区里直接写「冷却中 · 原因 · 剩余时间」。台账文件默认是 `<台账目录>/worker-health.json`，缺失或损坏一律当空台账处理，绝不会因为台账问题拦下派活。整套机制可以关：`WOLFPACK_WORKER_HEALTH=off`。
+
 ## 结果判定
 
 摘要分别展示“队员声称”和“我已核实”。前者是执行者报告，后者包含文件改动探测与验收命令结果。
@@ -340,6 +376,13 @@ CLI 正常返回的结构化结果也可能包含失败结论；自动化调用�
 | `stall.toast` | `WOLFPACK_STALL_TOAST` | 默认 `false`。设 `true` / `1` 时在 macOS 弹系统通知（CLI/MCP 下默认不打扰） |
 | `stallLogPath` | `WOLFPACK_STALL_LOG` | `<台账目录>/stall.ndjson`：停滞报警台账（NDJSON） |
 | `stall.storeRoots`（或旧版顶层 `stallStoreRoots`） | `WOLFPACK_AGY_STORE_ROOT` / `WOLFPACK_CLAUDE_STORE_ROOT` | 覆盖对应工人的会话存储根（默认 `~/.gemini/antigravity-cli` 与 `~/.claude/projects`） |
+| `workerHealth.enabled` | `WOLFPACK_WORKER_HEALTH` | `true`：工人健康与自动冷却总开关；`off` 完全退回老规则 |
+| `workerHealth.filePath` | `WOLFPACK_HEALTH_FILE` | `<台账目录>/worker-health.json`：健康台账文件 |
+| `workerHealth.failThreshold` | `WOLFPACK_WORKER_FAIL_THRESHOLD` | `2`：普通失败连续几次进入冷却（工人自身故障当轮即冷却） |
+| `workerHealth.cooldownMs` | `WOLFPACK_WORKER_COOLDOWN_MS` | `600000`：普通失败冷却时长（毫秒） |
+| `workerHealth.capacityCooldownMs` | `WOLFPACK_WORKER_CAPACITY_COOLDOWN_MS` | `300000`：额度/容量不足（含中转池子耗尽）冷却时长 |
+| `workerHealth.timeoutCooldownMs` | `WOLFPACK_WORKER_TIMEOUT_COOLDOWN_MS` | `600000`：超时（疑似挂住）冷却时长 |
+| `workerHealth.authCooldownMs` | `WOLFPACK_WORKER_AUTH_COOLDOWN_MS` | `1800000`：未登录/鉴权失败冷却时长 |
 | `panelPort` | `WOLFPACK_PANEL_PORT` | `8787`：面板端口（被占用时自动改用空闲端口） |
 | `panelHost` | `WOLFPACK_PANEL_HOST` | `127.0.0.1`：面板监听地址 |
 | `panelToken` | `WOLFPACK_PANEL_TOKEN` | 不设：面板口令；设了就要求 `?token=` 或 `x-wolfpack-token` 请求头 |

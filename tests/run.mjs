@@ -12,6 +12,7 @@ import { tests as shellTests } from './shell.test.mjs'
 import { tests as teamTests } from './team.test.mjs'
 import { tests as claudeWorkerTests } from './claude-worker.test.mjs'
 import { tests as liveTests } from './live.test.mjs'
+import { tests as workerHealthTests } from './worker-health.test.mjs'
 
 // 并发用例按平台选实现：macOS/Linux 的 POSIX 信号退出语义与 Windows 不同，详见 README「测试」一节。
 const concurrencySuitePath = process.platform === 'win32'
@@ -33,6 +34,7 @@ const allSuites = [
   ...teamTests,
   ...claudeWorkerTests,
   ...liveTests,
+  ...workerHealthTests,
 ]
 
 async function main() {

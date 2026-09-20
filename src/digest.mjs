@@ -1,4 +1,21 @@
 import { STALL_WORKERS, formatStallSummary } from './stall.mjs'
+import { faultLabel } from './worker/health.mjs'
+
+/**
+ * 冷却剩余时长的可读写法。
+ *
+ * @param {unknown} ms
+ * @returns {string}
+ */
+export function formatCooldown(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '不到 1 分钟'
+  const minutes = ms / 60_000
+  if (minutes < 1) return '不到 1 分钟'
+  if (minutes < 60) return `${Math.ceil(minutes)} 分钟`
+  const hours = Math.floor(minutes / 60)
+  const rest = Math.ceil(minutes - hours * 60)
+  return rest === 0 ? `${hours} 小时` : `${hours} 小时 ${rest} 分钟`
+}
 
 /**
  * 格式化本轮工具调用预算。
@@ -93,6 +110,32 @@ export function renderDigest(value) {
 
   if (typeof value.subagents_spawned === 'number' && value.subagents_spawned > 0) {
     lines.push(`🧩 子智能体：本轮派出 ${value.subagents_spawned} 个（工人自报用量）`)
+  }
+
+  // 工人健康：谁被冷却跳过、本轮工人自己是不是刚被冷却，都如实写出来
+  const benchedWorkers = Array.isArray(value.benched_workers) ? value.benched_workers : []
+  for (const bench of benchedWorkers) {
+    if (bench?.benched !== true) continue
+    lines.push(
+      `⛔ ${bench.worker} 处于冷却（${faultLabel(bench.last_reason)}，约剩 ${formatCooldown(bench.remaining_ms)}），`
+      + `本轮跳过、改由 ${workerName} 接手。`,
+    )
+  }
+  if (value.health_note === 'all-benched') {
+    lines.push(`⚠️ 两个工人都在冷却中，本轮仍由 ${workerName} 硬试一次（绝不空转）。`)
+  }
+  if (value.health_note === 'explicit-ignores-bench') {
+    lines.push(`⚠️ 配置固定用 ${workerName}，忽略它的冷却状态（显式点名优先）。`)
+  }
+  const workerHealth = value.worker_health
+  if (workerHealth?.benched === true) {
+    lines.push(
+      `⛔ ${workerName} 本轮故障已进入冷却（${faultLabel(workerHealth.last_reason)}），`
+      + `约 ${formatCooldown(workerHealth.remaining_ms)} 后自动恢复；下一轮会自动改派另一个工人，不用反复重试。`
+      + `想立刻重试：node bin/wolf.mjs health --reset ${workerName}`,
+    )
+  } else if (typeof workerHealth?.consecutive_failures === 'number' && workerHealth.consecutive_failures > 0) {
+    lines.push(`⚠️ ${workerName} 连续失败 ${workerHealth.consecutive_failures} 次（还没到冷却阈值）。`)
   }
 
   lines.push(...renderStallBlock(value))
@@ -223,5 +266,39 @@ export function renderStatus(value) {
       + ` · ${task.running ? '正在跑' : '未在跑'} · ${filesPart}${budgetPart}${stallPart}`,
     )
   }
+  return lines.join('\n')
+}
+
+/**
+ * 渲染工人健康台账（CLI `wolf health` 与 MCP `wolf_status` 共用）。
+ *
+ * @param {object} [value]
+ * @param {object[]} [value.workers] - snapshotHealth 的结果数组
+ * @param {string} [value.file_path]
+ * @param {boolean} [value.enabled]
+ * @param {number} [value.fail_threshold]
+ * @returns {string}
+ */
+export function renderHealthReport({ workers = [], file_path: filePath, enabled = true, fail_threshold: failThreshold } = {}) {
+  const lines = []
+  lines.push(`🐺 工人健康与冷却${enabled === false ? '（已关闭）' : ''}`)
+  if (typeof filePath === 'string' && filePath !== '') lines.push(`台账：${filePath}`)
+  if (typeof failThreshold === 'number') lines.push(`普通失败阈值：连续 ${failThreshold} 次进入冷却（工人自身故障当轮即冷却）`)
+  for (const snap of workers) {
+    if (snap?.benched === true) {
+      lines.push(
+        `⛔ ${snap.worker}：冷却中 · ${faultLabel(snap.last_reason)}`
+        + ` · 约剩 ${formatCooldown(snap.remaining_ms)} · 累计失败 ${snap.total_failures ?? 0} 次`,
+      )
+      if (typeof snap.last_diagnostic === 'string' && snap.last_diagnostic !== '') {
+        lines.push(`   上次诊断：${snap.last_diagnostic.slice(0, 120)}`)
+      }
+    } else if (typeof snap?.consecutive_failures === 'number' && snap.consecutive_failures > 0) {
+      lines.push(`⚠️ ${snap.worker}：可用，但已连续失败 ${snap.consecutive_failures} 次（${faultLabel(snap.last_reason)}）`)
+    } else {
+      lines.push(`✅ ${snap?.worker}：可用，无失败记录`)
+    }
+  }
+  lines.push('清除冷却：node bin/wolf.mjs health --reset claude | agy | all')
   return lines.join('\n')
 }

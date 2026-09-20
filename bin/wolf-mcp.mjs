@@ -2,7 +2,7 @@
 
 import { loadConfig } from '../src/config.mjs'
 import { killRun, liveRuns, runDelegateTask } from '../src/delegate.mjs'
-import { renderDigest, renderStatus } from '../src/digest.mjs'
+import { renderDigest, renderHealthReport, renderStatus } from '../src/digest.mjs'
 import { defaultActiveRuns, RunsLedger } from '../src/ledger.mjs'
 import { listLiveRecords } from '../src/live.mjs'
 import {
@@ -16,6 +16,8 @@ import {
 // 核心层不 import 宿主模块。DSH 一类宿主换注入 src/runtime/dsh.mjs。
 import { createNodeStallNotifier } from '../src/runtime/node.mjs'
 import { renderTeamDigest, runTeamTasks } from '../src/team.mjs'
+import { listWorkers } from '../src/worker/index.mjs'
+import { healthConfigOf, readHealthState, snapshotHealth } from '../src/worker/health.mjs'
 
 const config = loadConfig()
 // 停滞报警的宿主外设：控制台 + 台账（src/delegate.mjs 的 reportStall），
@@ -26,7 +28,7 @@ const ledger = new RunsLedger(config.ledgerPath, config)
 const TOOLS = [
   {
     name: 'wolf_delegate',
-    description: '把一件自洽、可机械验收的活交给工人执行，并把实测证据带回。工人由狼群全自动挑选（agy 与 claude 装了谁用谁、两个都装则自动轮流），无需也无法指定，不要就工人选择征求用户同意。注意：工人看不到本会话，task 必须完整独立。同一个 task_id 的多轮会续用同一工人的会话（沿用会话才不浪费上下文）；换不相关的事必须换 task_id。同一个 task_id 不允许并发。',
+    description: '把一件自洽、可机械验收的活交给工人执行，并把实测证据带回。工人由狼群全自动挑选（agy 与 claude 装了谁用谁、两个都装则自动轮流），无需也无法指定，不要就工人选择征求用户同意；坏掉的工人（没输出/超时/额度或中转池子耗尽/未登录）会被自动冷却并改派另一个，收到 ⛔ 冷却提示时不要连续重派同一个 task_id。注意：工人看不到本会话，task 必须完整独立。同一个 task_id 的多轮会续用同一工人的会话（沿用会话才不浪费上下文）；换不相关的事必须换 task_id。同一个 task_id 不允许并发。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -42,7 +44,7 @@ const TOOLS = [
   },
   {
     name: 'wolf_status',
-    description: '只读台账，回答「我派过哪些活、各自到哪了」。注意：纯只读，绝不启动工人、不跑验收、不消耗配额。给出轮数、最后 verdict、最后 stop_reason、累计 token 与 conversation_id 状态。',
+    description: '只读台账，回答「我派过哪些活、各自到哪了」，并顺带给出两个工人的健康与冷却状态。注意：纯只读，绝不启动工人、不跑验收、不消耗配额。给出轮数、最后 verdict、最后 stop_reason、累计 token 与 conversation_id 状态。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -285,8 +287,27 @@ async function handleRequest(req) {
           ledger_path: ledger.filePath,
         }
 
+        // 工人健康（谁在冷却、冷却到什么时候）：与 status 一并返回，没调用新工具也能看到
+        const healthConfig = healthConfigOf(config)
+        const healthState = await readHealthState(config.workerHealth?.filePath)
+        const workerHealth = {
+          enabled: healthConfig.enabled,
+          file_path: config.workerHealth?.filePath,
+          fail_threshold: healthConfig.failThreshold,
+          workers: listWorkers().map(w => snapshotHealth(healthState, w.name)),
+        }
+        statusOutput.worker_health = workerHealth
+
         return sendResponse(id, {
-          content: [{ type: 'text', text: renderStatus(statusOutput) }],
+          content: [{
+            type: 'text',
+            text: `${renderStatus(statusOutput)}\n\n${renderHealthReport({
+              workers: workerHealth.workers,
+              file_path: workerHealth.file_path,
+              enabled: workerHealth.enabled,
+              fail_threshold: workerHealth.fail_threshold,
+            })}`,
+          }],
           raw: statusOutput,
         })
       }

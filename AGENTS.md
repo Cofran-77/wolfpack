@@ -153,3 +153,14 @@
 - **工人固定开销**：工人冷启动存在基线空载开销（agy 实测约 27k tokens / 14 秒）；复用 `task_id` 续跑可省去此开销（实测续跑仅约 40 秒）。
 - **累计 token 预算**：冷启动由累计 token 预算闸门（默认 1,000,000 tokens）控制；当单任务累计用量超过预算时，会自动触发强制冷启动并在 digest 里明确注明原因。
 - **队长步数成本**：队长的每一轮思考与工具调用产生实际费用。通过 `wolf_delegate` 一步完成「派发 + 验收」，大幅压缩队长轮数。
+
+---
+
+## 六、工人健康与自动冷却（改派而不是硬撞）
+
+- **自动改派**：某工人出现自身故障（没有输出 / 超时挂住 / 额度与容量不足，含 API 中转池子的 `402`、`429`、`insufficient_user_quota`、`无可用渠道`、`额度不足` / 未登录与鉴权失败）时当轮进入冷却，下一轮自动派给另一个工人；普通失败（工人回了话但自报失败）连续 2 次才冷却。**队长不需要为此做任何事，也不要手动重试同一个工人。**
+- **冷却时长**：容量/额度类 5 分钟，超时与普通失败 10 分钟，未登录/鉴权失败 30 分钟，到期自动恢复。两个工人都在冷却时会硬试最早恢复的那个，**永不空转**。
+- **digest 会说话**：被跳过的工人写成 `⛔ <工人> 处于冷却（原因，约剩 N 分钟），本轮跳过、改由 <另一工人> 接手`；本轮工人自己刚被冷却时也会写出来，并提示下一轮会改派。
+- **不要替工人重试**：收到 `capacity` 或冷却提示时，不要连续重派同一个 `task_id`；等冷却到期、换 `task_id`，或者在修好之后用 `node bin/wolf.mjs health --reset claude|agy|all` 手动解除。
+- **看健康**：`node bin/wolf.mjs health [--json]` 纯只读；`wolf_status` 末尾与实时面板的每个工人分区也会显示冷却状态。台账文件默认 `<台账目录>/worker-health.json`，损坏一律当空台账，绝不拦下派活。
+- **可关可调**：`WOLFPACK_WORKER_HEALTH=off` 完全退回老规则；阈值与时长用 `WOLFPACK_WORKER_FAIL_THRESHOLD`、`WOLFPACK_WORKER_COOLDOWN_MS`、`WOLFPACK_WORKER_CAPACITY_COOLDOWN_MS`、`WOLFPACK_WORKER_TIMEOUT_COOLDOWN_MS`、`WOLFPACK_WORKER_AUTH_COOLDOWN_MS`。

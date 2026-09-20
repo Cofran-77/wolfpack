@@ -58,6 +58,7 @@ body{margin:0;padding:16px 18px 40px;font:13px/1.55 -apple-system,BlinkMacSystem
 .tag.v-unverified,.tag.v-none{opacity:.7;}
 .tag.r-auto{color:#3b7ddd;background:rgba(59,125,221,.14);}
 .tag.r-fallback{color:#b8860b;background:rgba(224,160,48,.18);}
+.tag.r-bench{color:#c85656;background:rgba(224,112,112,.16);}
 .stall{margin:8px 0;padding:6px 9px;border-radius:6px;font-size:11.5px;line-height:1.5;border:1px solid transparent;background:light-dark(rgba(0,0,0,.04),rgba(255,255,255,.05));}
 .stall.ok{border-color:rgba(47,158,99,.3);}
 .stall.idle{opacity:.7;}
@@ -128,6 +129,8 @@ export function renderPanelHtml({ title = '🐺 狼群实时面板', refreshMs }
     <span class="tag r-fallback">回退</span><span>配置指定的工人不可用，自动改用另一个</span>
   </div>
   停滞监控只报警、永不自动终止；判据是工人自己还在不在写会话流水。
+  工人健康：某工人坏过（没输出/超时/额度或中转池子耗尽/未登录）会自动进入冷却，
+  下一轮改派另一个工人；两个都在冷却时仍硬试最早恢复的那个，绝不空转。
 </div>
 ${refreshScript}
 <script>${PANEL_CLIENT_SOURCE}</script>

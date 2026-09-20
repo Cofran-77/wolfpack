@@ -198,6 +198,32 @@ export function loadConfig(overrides = {}, cwd = process.cwd(), env = process.en
   const maxBytes = Number(env.WOLFPACK_LEDGER_MAX_BYTES ?? merged.maxBytes ?? 10 * 1024 * 1024) || 10 * 1024 * 1024
   const keepRounds = Number(env.WOLFPACK_LEDGER_KEEP_ROUNDS ?? merged.keepRounds ?? 10) || 10
 
+  // 15.5 工人健康与冷却：某工人坏过（没输出/超时/额度耗尽/未登录）就先冷落它，
+  // 下一轮自动改派另一个工人；两个都在冷却时仍硬试最早恢复的那个，绝不空转。
+  const healthFlagRaw = env.WOLFPACK_WORKER_HEALTH ?? merged.workerHealth?.enabled ?? true
+  const workerHealthEnabled = !['off', 'none', '0', 'false', 'no'].includes(String(healthFlagRaw).trim().toLowerCase())
+  const defaultHealthFile = join(dirname(ledgerPath), 'worker-health.json')
+  const healthFileRaw = env.WOLFPACK_HEALTH_FILE || merged.workerHealth?.filePath || defaultHealthFile
+  const failThresholdRaw = Number(env.WOLFPACK_WORKER_FAIL_THRESHOLD ?? merged.workerHealth?.failThreshold ?? 2)
+  const workerHealth = {
+    enabled: workerHealthEnabled,
+    filePath: resolveHome(healthFileRaw),
+    failThreshold: Number.isFinite(failThresholdRaw) && failThresholdRaw > 0 ? Math.floor(failThresholdRaw) : 2,
+    cooldownMs: parseTimeoutMs(env.WOLFPACK_WORKER_COOLDOWN_MS ?? merged.workerHealth?.cooldownMs ?? 600_000, 600_000),
+    capacityCooldownMs: parseTimeoutMs(
+      env.WOLFPACK_WORKER_CAPACITY_COOLDOWN_MS ?? merged.workerHealth?.capacityCooldownMs ?? 300_000,
+      300_000,
+    ),
+    timeoutCooldownMs: parseTimeoutMs(
+      env.WOLFPACK_WORKER_TIMEOUT_COOLDOWN_MS ?? merged.workerHealth?.timeoutCooldownMs ?? 600_000,
+      600_000,
+    ),
+    authCooldownMs: parseTimeoutMs(
+      env.WOLFPACK_WORKER_AUTH_COOLDOWN_MS ?? merged.workerHealth?.authCooldownMs ?? 1_800_000,
+      1_800_000,
+    ),
+  }
+
   // 16. 停滞监控：**每个工人各一套**（agy 看自己的 brain/conversations，claude 看 ~/.claude/projects）
   const stall = resolveStallConfigs({ env, config: merged })
   const defaultStallLog = join(dirname(ledgerPath), 'stall.ndjson')
@@ -235,6 +261,7 @@ export function loadConfig(overrides = {}, cwd = process.cwd(), env = process.en
     maxEntries,
     maxBytes,
     keepRounds,
+    workerHealth,
     stall,
     stallLogPath,
     stallToast,

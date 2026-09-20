@@ -4,6 +4,7 @@ import { isAbsolute } from 'node:path'
 // 工人输出契约与 agy 完全一致（structured_output.summary / claimed_files，字段名经实测确认），
 // 因此复用同一份解析器，避免两份实现漂移。
 import { parseStructuredReport } from './agy.mjs'
+import { CAPACITY_STATUS, matchCapacity } from './faults.mjs'
 
 /** 默认输出 JSON Schema 约束（与 agy 同形状：summary + claimed_files） */
 export const DEFAULT_CLAUDE_SCHEMA = {
@@ -27,11 +28,11 @@ export const DEFAULT_CLAUDE_SCHEMA = {
   required: ['summary'],
 }
 
-/** 视为「服务端容量不足」的 API 状态码 */
-export const CLAUDE_CAPACITY_STATUS = [429, 503, 529]
-
-/** 容量不足的文本特征（只在错误字段与 stderr 上匹配，避免误判工人正文） */
-const CAPACITY_PATTERN = /overloaded|no capacity available|rate limit/i
+/**
+ * 视为「服务端容量不足」的 API 状态码（含中转池子额度耗尽的 402）。
+ * 保留旧名以免外部引用失效，实际判定统一走 faults.mjs 的共享规则。
+ */
+export const CLAUDE_CAPACITY_STATUS = CAPACITY_STATUS
 
 /**
  * 判定 claude 是否报服务端容量不足（429/503/529 或对应文案）。
@@ -42,14 +43,12 @@ const CAPACITY_PATTERN = /overloaded|no capacity available|rate limit/i
  */
 export function isClaudeCapacityError(parsed, stderr) {
   const status = parsed?.api_error_status
-  if (typeof status === 'number' && CLAUDE_CAPACITY_STATUS.includes(status)) return true
-
   const probes = []
   if (typeof parsed?.error === 'string') probes.push(parsed.error)
   if (typeof parsed?.result === 'string') probes.push(parsed.result.slice(0, 500))
   if (typeof stderr === 'string') probes.push(stderr.slice(0, 2000))
 
-  return probes.some(text => CAPACITY_PATTERN.test(text))
+  return matchCapacity({ status: typeof status === 'number' ? status : undefined, texts: probes })
 }
 
 /**
@@ -216,6 +215,7 @@ export const claudeWorker = {
         structuredOutput: parsed.structured_output,
         structuredReport: parseStructuredReport(parsed),
         costUsd: num(parsed.total_cost_usd),
+        apiStatus,
         permissionDenials: Array.isArray(parsed.permission_denials) ? parsed.permission_denials.length : undefined,
         subagents: stats
           ? { spawned: num(stats.spawned) ?? 0, maxDepth: num(stats.max_depth) }
