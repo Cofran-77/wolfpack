@@ -627,6 +627,280 @@ export const tests = [
     },
   },
 
+  {
+    name: 'live-transcript-never-guesses-among-concurrent-claude-runs',
+    async run() {
+      const tempDir = createTempDir('live-concurrent-claude-')
+      const storeRoot = join(tempDir, 'projects')
+      const cwd = join(tempDir, 'cwd')
+      try {
+        mkdirSync(cwd, { recursive: true })
+        const projectDir = join(storeRoot, claudeProjectSlug(cwd))
+        mkdirSync(projectDir, { recursive: true })
+        // 只有一份流水文件：若谁都能认领它，就会变成「三个任务报同一份流水」
+        writeFileSync(join(projectDir, 'only-one.jsonl'), `${CLAUDE_LINE}\n`, 'utf8')
+
+        const payload = await buildLivePayload({
+          ledger: { async read() { return new Map() } },
+          activeRuns: [],
+          liveHandles: new Map([
+            ['a', { taskId: 'a', worker: 'claude', round: 1, cwd }],
+            ['b', { taskId: 'b', worker: 'claude', round: 1, cwd }],
+            ['c', { taskId: 'c', worker: 'claude', round: 1, cwd }],
+          ]),
+          stallConfigs: { agy: { storeRoot: '/tmp/agy' }, claude: { storeRoot } },
+        })
+
+        const claudeRuns = payload.runs.filter(r => r.worker === 'claude')
+        assert.equal(claudeRuns.length, 3)
+        for (const run of claudeRuns) {
+          assert.equal(
+            run.transcript.available,
+            false,
+            `${run.task_id}：同目录多开又拿不到会话 ID 时必须如实说读不到，不许认领别人的流水`,
+          )
+        }
+      } finally {
+        clearTranscriptCache()
+        cleanTempDir(tempDir)
+      }
+    },
+  },
+  {
+    name: 'live-transcript-fallback-allowed-for-single-claude-run',
+    async run() {
+      const tempDir = createTempDir('live-single-claude-')
+      const storeRoot = join(tempDir, 'projects')
+      const cwd = join(tempDir, 'cwd')
+      try {
+        mkdirSync(cwd, { recursive: true })
+        const projectDir = join(storeRoot, claudeProjectSlug(cwd))
+        mkdirSync(projectDir, { recursive: true })
+        writeFileSync(join(projectDir, 'only-one.jsonl'), `${CLAUDE_LINE}\n`, 'utf8')
+
+        const payload = await buildLivePayload({
+          ledger: { async read() { return new Map() } },
+          activeRuns: [],
+          liveHandles: new Map([
+            ['solo', { taskId: 'solo', worker: 'claude', round: 1, cwd }],
+          ]),
+          stallConfigs: { agy: { storeRoot: '/tmp/agy' }, claude: { storeRoot } },
+        })
+
+        const run = payload.runs.find(r => r.task_id === 'solo')
+        assert.equal(run.transcript.available, true, '只有单个 claude 在跑时，「最新会话」兜底仍然可用')
+        assert.match(run.transcript.events.at(-1).text, /先把失败用例读一遍/)
+      } finally {
+        clearTranscriptCache()
+        cleanTempDir(tempDir)
+      }
+    },
+  },
+  {
+    name: 'live-summary-omits-transcript-by-default',
+    async run() {
+      const payload = {
+        generated_at: Date.now(),
+        ledger_total: 1,
+        workers: {
+          agy: {
+            worker: 'agy',
+            label: 'Antigravity CLI',
+            counts: { running: 0, idle: 0, ledger_total: 0 },
+            tokens: { total: 0, cache_read: 0 },
+            running: [],
+            idle: [],
+          },
+          claude: {
+            worker: 'claude',
+            label: 'Claude Code CLI',
+            counts: { running: 1, idle: 0, ledger_total: 1 },
+            tokens: { total: 1, cache_read: 0 },
+            running: [{
+              task_id: 'busy',
+              worker: 'claude',
+              status: 'running',
+              round: 1,
+              step_index: 2,
+              step_total: 5,
+              transcript: {
+                available: true,
+                events: [{ kind: 'assistant', text: '秘密流水内容' }],
+              },
+            }],
+            idle: [],
+          },
+        },
+      }
+
+      const compact = renderLiveSummary(payload)
+      assert.doesNotMatch(compact, /秘密流水内容/, '默认不许把工人流水灌进主线程上下文')
+      assert.doesNotMatch(compact, /零 token/, '回执会进上下文，不许再自称零 token')
+      assert.match(compact, /busy/, '默认仍然要报任务与步骤')
+
+      const verbose = renderLiveSummary(payload, { transcript: true })
+      assert.match(verbose, /秘密流水内容/, '显式要求时才给流水')
+    },
+  },
+  {
+    name: 'mcp-wolf-status-default-stays-small',
+    async run() {
+      const tempDir = createTempDir('mcp-status-')
+      let proc
+      try {
+        const ledgerPath = join(tempDir, 'runs.ndjson')
+        const lines = []
+        for (let i = 0; i < 30; i++) {
+          lines.push(JSON.stringify({
+            at: 1_700_000_000_000 + i * 1000,
+            taskId: `noise-${i}`,
+            worker: 'claude',
+            round: 1,
+            verdict: 'pass',
+            stopReason: 'completed',
+            tokens: 1234,
+            cwd: '/tmp/project',
+            changedFiles: [],
+            changedFilesDetermined: true,
+          }))
+        }
+        writeFileSync(ledgerPath, `${lines.join('\n')}\n`, 'utf8')
+
+        const res = await callMcpTool('wolf_status', {}, {
+          WOLFPACK_LEDGER: ledgerPath,
+          WOLFPACK_RAW_DIR: join(tempDir, 'raw'),
+        })
+        proc = res.proc
+        const text = res.data.result?.content?.[0]?.text ?? ''
+        const taskLines = text.split('\n').filter(line => line.startsWith('- '))
+        assert.ok(taskLines.length > 0, '默认仍要给出最近的任务')
+        assert.ok(taskLines.length <= 5, `默认最多列 5 条（省上下文），实际 ${taskLines.length} 条`)
+        assert.match(text, /30/, '必须说明台账里总共有多少条')
+        assert.match(text, /limit/, '必须告诉调用方怎么放大 limit')
+      } finally {
+        proc?.kill()
+        cleanTempDir(tempDir)
+      }
+    },
+  },
+  {
+    name: 'mcp-wolf-status-lists-running-before-finished',
+    async run() {
+      const tempDir = createTempDir('mcp-status-order-')
+      let proc
+      try {
+        const ledgerPath = join(tempDir, 'runs.ndjson')
+        const base = 1_700_000_000_000
+        const lines = [
+          // 40 分钟前登记、到现在还没结束的那个：按「最后登记时间」排它排到最后
+          JSON.stringify({
+            at: base,
+            taskId: 'long-running',
+            worker: 'claude',
+            round: 1,
+            verdict: 'running',
+            stopReason: 'running',
+            tokens: 0,
+            cwd: '/tmp/project',
+            changedFiles: [],
+            changedFilesDetermined: false,
+          }),
+        ]
+        for (let i = 0; i < 8; i++) {
+          lines.push(JSON.stringify({
+            at: base + (i + 1) * 60_000,
+            taskId: `finished-${i}`,
+            worker: 'claude',
+            round: 1,
+            verdict: 'pass',
+            stopReason: 'completed',
+            tokens: 100,
+            cwd: '/tmp/project',
+            changedFiles: [],
+            changedFilesDetermined: true,
+          }))
+        }
+        writeFileSync(ledgerPath, `${lines.join('\n')}\n`, 'utf8')
+
+        const res = await callMcpTool('wolf_status', {}, {
+          WOLFPACK_LEDGER: ledgerPath,
+          WOLFPACK_RAW_DIR: join(tempDir, 'raw'),
+        })
+        proc = res.proc
+        const text = res.data.result?.content?.[0]?.text ?? ''
+        const taskLines = text.split('\n').filter(line => line.startsWith('- '))
+        assert.ok(taskLines.length > 0, '默认仍要给出任务行')
+        assert.match(
+          taskLines[0],
+          /long-running/,
+          '还在跑的任务必须排在第一条：按登记时间排序会被刚结束的历史挤出默认视图',
+        )
+      } finally {
+        proc?.kill()
+        cleanTempDir(tempDir)
+      }
+    },
+  },
+
+  {
+    name: 'mcp-wolf-status-does-not-hoist-killed-run',
+    async run() {
+      const tempDir = createTempDir('mcp-status-killed-')
+      let proc
+      try {
+        const ledgerPath = join(tempDir, 'runs.ndjson')
+        const base = 1_700_000_000_000
+        const lines = []
+        for (let i = 0; i < 8; i++) {
+          lines.push(JSON.stringify({
+            at: base + (i + 1) * 60_000,
+            taskId: `finished-${i}`,
+            worker: 'claude',
+            round: 1,
+            verdict: 'pass',
+            stopReason: 'completed',
+            tokens: 100,
+            cwd: '/tmp/project',
+            changedFiles: [],
+            changedFilesDetermined: true,
+          }))
+        }
+        // 被 kill 的任务：台账最后一条 verdict 仍是 running，但 stopReason 已经是 aborted。
+        // 这种不该被当成「还在跑」顶到最前，否则它会一辈子赖在默认视图第一条。
+        lines.push(JSON.stringify({
+          at: base + 4 * 60_000 + 30_000,
+          taskId: 'killed-stale',
+          worker: 'claude',
+          round: 1,
+          verdict: 'running',
+          stopReason: 'aborted',
+          tokens: 0,
+          cwd: '/tmp/project',
+          changedFiles: [],
+          changedFilesDetermined: false,
+        }))
+        writeFileSync(ledgerPath, `${lines.join('\n')}\n`, 'utf8')
+
+        const res = await callMcpTool('wolf_status', {}, {
+          WOLFPACK_LEDGER: ledgerPath,
+          WOLFPACK_RAW_DIR: join(tempDir, 'raw'),
+        })
+        proc = res.proc
+        const text = res.data.result?.content?.[0]?.text ?? ''
+        const taskLines = text.split('\n').filter(line => line.startsWith('- '))
+        assert.doesNotMatch(
+          taskLines[0] ?? '',
+          /killed-stale/,
+          '已经 aborted 的任务不许当「还在跑」顶到第一条',
+        )
+        assert.match(text, /killed-stale/, '但它仍应按登记时间正常出现在列表里，不该被藏掉')
+      } finally {
+        proc?.kill()
+        cleanTempDir(tempDir)
+      }
+    },
+  },
+
   /* ── 会话流水（两份独立解析）────────────────────────────────── */
   {
     name: 'live-transcript-parses-both-workers',

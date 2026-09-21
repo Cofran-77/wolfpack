@@ -13,7 +13,9 @@ import { claudeProjectSlug } from './stall.mjs'
  *          <store>/<项目目录>/<session_id>.jsonl
  *          行形如 { type, message: { role, content }, timestamp, uuid, sessionId }
  *
- * 本模块纯只读，永远不写会话流水，也永远不把内容送进模型上下文。
+ * 本模块纯只读，永远不写会话流水。它自己不往模型上下文塞东西，但注意：
+ * 读出来的流水一旦被 `renderLiveSummary` 渲染，就会跟着回执进入调用方上下文——
+ * 所以那条路默认关掉，只有调用方显式 `transcript: true` 才会带上。
  */
 
 /** 每个运行最多返回的事件条数。 */

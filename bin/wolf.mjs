@@ -193,7 +193,14 @@ async function main() {
         ? allStates.filter(s => s.taskId === flags['task-id'])
         : allStates
 
-      filtered.sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))
+      // 还在跑的一定排在最前（理由同 MCP 侧）：按登记时间排序会让长任务掉出默认视图。
+      // verdict=running 还必须配上 stop_reason=running：被 kill 的只剩 aborted。
+      const isRunningState = s => activeIds.has(s.taskId)
+        || (s.lastVerdict === 'running' && s.lastStopReason === 'running')
+      filtered.sort((a, b) => {
+        const byRunning = (isRunningState(b) ? 1 : 0) - (isRunningState(a) ? 1 : 0)
+        return byRunning !== 0 ? byRunning : (b.lastAt || 0) - (a.lastAt || 0)
+      })
 
       const limit = flags.limit && flags.limit > 0 ? flags.limit : 20
       const truncated = filtered.length > limit
@@ -380,7 +387,8 @@ async function main() {
       if (flags.json) {
         console.log(JSON.stringify(JSON.parse(enforcePayloadBounds(payload)), null, 2))
       } else {
-        console.log(renderLiveSummary(payload))
+        // 终端输出不进模型上下文，人看的时候流水才是有用的那部分，这里显式打开
+        console.log(renderLiveSummary(payload, { transcript: true }))
       }
       process.exit(0)
     } catch (err) {

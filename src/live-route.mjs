@@ -12,7 +12,9 @@ import { healthConfigOf, readHealthState, snapshotHealth } from './worker/health
 /**
  * 狼群实时路由（宿主无关的构建逻辑 + 一个本地 HTTP 实现）。
  *
- * 铁律：纯只读、零 token。数据只走 HTTP，永不写入会话日志，永不进模型上下文。
+ * 铁律：HTTP 路由纯只读，数据只走 HTTP，永不写入会话日志、永不进模型上下文；
+ * 但 `renderLiveSummary` 的输出是**给调用方（主线程）看的**，会整段进入它的
+ * 上下文并常驻——两者别混：进上下文的只有摘要文本，面板那条路确实不沾模型。
  *
  * **两个工人分开展示**：payload 里 `workers.agy` 与 `workers.claude` 各自持有
  * 自己的运行列表、token 累计、最近一次结果与停滞状态，前端按工人分区渲染。
@@ -135,7 +137,8 @@ async function newestAgyTranscript(storeRoot) {
  * @param {object} params.stallConfig
  * @param {string|undefined} params.conversationId
  * @param {string} [params.cwd]
- * @param {boolean} [params.allowNewestFallback] - agy 在会话 ID 产生前能否按「最新会话」兜底
+ * @param {boolean} [params.allowNewestFallback] - 会话 ID 未产生时能否按「最新会话」兜底。
+ *   两个工人都靠它防串台：同一目录下多开时，「最新会话」分不清是谁的，猜错就是报错人。
  * @returns {Promise<object>}
  */
 async function readRunTranscript({ worker, running, stallConfig, conversationId, cwd, allowNewestFallback }) {
@@ -148,7 +151,10 @@ async function readRunTranscript({ worker, running, stallConfig, conversationId,
   }
 
   let filePath = await resolveTranscriptPath(worker, { storeRoot, conversationId, cwd })
-  if (filePath === undefined && worker === 'claude' && running === true) {
+  // claude 的 conversationId 要等本轮结束才拿得到；同一个 cwd 下多开时
+  // 「最新会话」根本认不出是谁的，认领错了就会把 A 的流水报成 B、C 的。
+  // 只有该工人只有一个在跑时才兜底（多开时不猜，避免串台）。
+  if (filePath === undefined && worker === 'claude' && running === true && allowNewestFallback === true) {
     filePath = await newestClaudeSessionFile(storeRoot, cwd)
   }
   // agy 的 conversationId 要等本轮结束才拿得到；只有一个 agy 运行在跑时，
@@ -416,10 +422,17 @@ export async function buildLivePayload(config = {}) {
  * 人话版实时摘要（CLI `wolf live` 与 MCP `wolf_live` 共用）。
  * **两个工人各起一节**，谁都不会被另一个顶掉。
  *
+ * 铁律：MCP 这条路上的回执会**整段进入调用方（主线程）的上下文并常驻**，
+ * 之后每一轮都要重读一遍。所以默认只给「谁在跑、跑到第几步、停滞如何」这类
+ * 短事实；工人会话流水等于把工人原文灌回主上下文，必须由调用方显式传
+ * `transcript: true` 才附带。终端里的 `wolf live` 不进模型上下文，自己显式打开。
+ *
  * @param {object} payload - buildLivePayload 的结果
+ * @param {object} [options]
+ * @param {boolean} [options.transcript] - 是否附带工人会话流水片段（默认 false）
  * @returns {string}
  */
-export function renderLiveSummary(payload) {
+export function renderLiveSummary(payload, { transcript = false } = {}) {
   const lines = []
   const stamp = new Date(payload?.generated_at ?? Date.now()).toLocaleString('zh-CN', { hour12: false })
   const runningTotal = (payload?.runs ?? []).filter(r => r.status === 'running').length
@@ -449,8 +462,11 @@ export function renderLiveSummary(payload) {
         ? '步骤未知'
         : (run.step_total > 0 ? `步骤 ${run.step_index}/${run.step_total}` : `步骤 ${run.step_index}`)
       lines.push(`  ▶ ${run.task_id} · ${bits.join(' · ')} · ${step}`)
-      for (const evt of (run.transcript?.events ?? []).slice(-3)) {
-        lines.push(`      ${evt.kind ?? '事件'}：${String(evt.text ?? '').slice(0, 120)}`)
+      // 工人流水会把工人原文灌回调用方上下文，默认不给，只有显式 opt-in 才附带。
+      if (transcript === true) {
+        for (const evt of (run.transcript?.events ?? []).slice(-3)) {
+          lines.push(`      ${evt.kind ?? '事件'}：${String(evt.text ?? '').slice(0, 120)}`)
+        }
       }
       if (run.transcript?.available === false && run.transcript?.reason) {
         lines.push(`      （流水不可读：${run.transcript.reason}）`)
@@ -469,7 +485,7 @@ export function renderLiveSummary(payload) {
   }
 
   lines.push('')
-  lines.push(`面板：${PANEL_ROUTE_PATH} · 实时 JSON：${LIVE_ROUTE_PATH}（只读、零 token）`)
+  lines.push(`面板 ${PANEL_ROUTE_PATH}（走浏览器、不进你的上下文）· 机器可读 ${LIVE_ROUTE_PATH}`)
   return lines.join('\n')
 }
 

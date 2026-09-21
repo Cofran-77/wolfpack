@@ -44,7 +44,7 @@ const TOOLS = [
   },
   {
     name: 'wolf_status',
-    description: '只读台账，回答「我派过哪些活、各自到哪了」，并顺带给出两个工人的健康与冷却状态。注意：纯只读，绝不启动工人、不跑验收、不消耗配额。给出轮数、最后 verdict、最后 stop_reason、累计 token 与 conversation_id 状态。',
+    description: '只读台账，回答「我派过哪些活、各自到哪了」，并顺带给出两个工人的健康与冷却状态。绝不启动工人、不跑验收。注意：回执会**整段进入你的上下文并常驻**（之后每轮都要重读一遍），它不是免费轮询——默认只列最近 5 条（还没结束的任务一定排最前），要更多传 limit，看单个任务传 task_id。给出轮数、最后 verdict、最后 stop_reason、累计 token 与 conversation_id 状态。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -96,11 +96,12 @@ const TOOLS = [
   },
   {
     name: 'wolf_live',
-    description: '只读实时状态：正在跑什么、哪个工人在跑、跑到第几步、停滞监控现在什么状态。**按工人分区展示**（agy 与 claude 各一节，互不覆盖）。纯只读、零 token、绝不启动工人；想看图形界面就调 wolf_panel 拿面板地址。',
+    description: '只读实时状态：正在跑什么、哪个工人在跑、跑到第几步、停滞监控现在什么状态。**按工人分区展示**（agy 与 claude 各一节，互不覆盖）。绝不启动工人、也不花工人的钱。注意：回执会**整段进入你的上下文并常驻**（之后每轮都要重读一遍），所以它不是免费的——长任务期间不要反复查，等它跑完看一次即可；要持续盯就给 wolf_panel 的地址（面板数据走浏览器，不进上下文）。默认不附带工人会话流水，确实要排查才传 transcript=true。',
     inputSchema: {
       type: 'object',
       properties: {
         limit: { type: 'integer', description: '最多返回几个运行（1 到 50，默认 8；两个工人会被轮转取样，保证都不缺席）' },
+        transcript: { type: 'boolean', description: '是否附带工人会话流水片段。默认 false：流水会把工人原文灌进你的上下文并常驻，只在排查停滞时才打开。' },
       },
     },
   },
@@ -247,9 +248,20 @@ async function handleRequest(req) {
           ? allStates.filter(s => s.taskId === toolArgs.task_id)
           : allStates
 
-        filtered.sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))
+        // 还在跑的一定排在最前：纯按「最后登记时间」排序，会把跑了很久还没结束的任务
+        // 挤到刚结束的历史任务后面——而调用方最关心的恰恰是它还在不在跑。
+        // 判定同时看活登记与台账里的 verdict=running，MCP 进程重启过也认得出来；
+        // 但必须同时要求 stop_reason 还是 running——被 kill 的任务最后一条只有
+        // stop_reason=aborted，verdict 会停在 running 上，只认 verdict 会让它永远赖在第一条。
+        const isRunningState = s => activeIds.has(s.taskId)
+          || (s.lastVerdict === 'running' && s.lastStopReason === 'running')
+        filtered.sort((a, b) => {
+          const byRunning = (isRunningState(b) ? 1 : 0) - (isRunningState(a) ? 1 : 0)
+          return byRunning !== 0 ? byRunning : (b.lastAt || 0) - (a.lastAt || 0)
+        })
 
-        const limit = toolArgs.limit && toolArgs.limit > 0 ? Math.min(toolArgs.limit, 100) : 20
+        // 默认只列最近 5 条：这段文本会整段进调用方上下文并常驻，历史台账是最没用的那部分
+        const limit = toolArgs.limit && toolArgs.limit > 0 ? Math.min(toolArgs.limit, 100) : 5
         const truncated = filtered.length > limit
 
         const budgetLimit = typeof config.continuationTokenBudget === 'number' && config.continuationTokenBudget > 0
@@ -351,7 +363,7 @@ async function handleRequest(req) {
         const limit = Number.isFinite(toolArgs.limit) ? toolArgs.limit : undefined
         const payload = await buildLivePayload(await liveDataSources(limit === undefined ? {} : { maxRuns: limit }))
         return sendResponse(id, {
-          content: [{ type: 'text', text: renderLiveSummary(payload) }],
+          content: [{ type: 'text', text: renderLiveSummary(payload, { transcript: toolArgs.transcript === true }) }],
           raw: JSON.parse(enforcePayloadBounds(payload)),
         })
       }
@@ -360,7 +372,7 @@ async function handleRequest(req) {
         const panel = await ensurePanelServer(toolArgs.port)
         const liveUrl = `http://${config.panel?.host ?? '127.0.0.1'}:${panel.port}/wolfpack/live`
         const text = [
-          '🐺 狼群实时面板已就绪（只读、零 token，两个工人分开展示）',
+          '🐺 狼群实时面板已就绪（数据只走浏览器、不进你的上下文，两个工人分开展示）',
           `面板：${panel.url}`,
           `实时 JSON：${liveUrl}`,
           '面板把 agy 与 claude 各自的运行、步骤、会话流水、停滞监控与 token 累计分开显示，每 3 秒自刷新；关掉 MCP 进程面板即停止。',

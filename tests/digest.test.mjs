@@ -2,10 +2,44 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 
-import { renderDigest } from '../src/digest.mjs'
+import { renderDigest, renderStatus } from '../src/digest.mjs'
 import { cleanTempDir, createTempDir, projectRoot } from './test-helper.mjs'
 
 export const tests = [
+  {
+    name: 'status-view-does-not-repeat-token-budget',
+    async run() {
+      const task = {
+        task_id: 'busy',
+        worker: 'claude',
+        round: 2,
+        last_verdict: 'pass',
+        last_stop_reason: 'completed',
+        total_tokens: 638617,
+        has_conversation_id: true,
+        running: false,
+        changed_files_count: 0,
+        changed_files: [],
+        changed_files_determined: true,
+        budget_used: 638617,
+        budget_limit: 1000000,
+        budget_over: false,
+      }
+      const view = { ledger_path: '/tmp/runs.ndjson', total: 1, limit: 5, truncated: false, tasks: [task] }
+
+      const text = renderStatus(view)
+      assert.match(text, /busy/, '任务本体仍然要渲染')
+      assert.match(text, /tokens=638617/, 'token 数要报')
+      assert.doesNotMatch(
+        text,
+        /预算 638617\/1000000/,
+        'token 数已经报过一次，不许再把同一个数字当预算分母重复一遍',
+      )
+
+      const over = renderStatus({ ...view, tasks: [{ ...task, budget_over: true }] })
+      assert.match(over, /已超/, '预算真的超了要明确报警，不能连报警一起删掉')
+    },
+  },
   {
     name: 'digest-two-sections',
     async run() {

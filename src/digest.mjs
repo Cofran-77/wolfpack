@@ -238,7 +238,10 @@ export function renderStatus(value) {
     lines.push(`台账：${value.ledger_path}`)
   }
   const tasks = value.tasks ?? []
-  lines.push(`任务 ${value.total} 个，显示 ${tasks.length} 个${value.truncated ? '（已截断：用 task_id 或 limit 收窄）' : ''}`)
+  lines.push(
+    `任务 ${value.total} 个，显示 ${tasks.length} 个`
+    + (value.truncated ? `（已截断：默认只列最近 ${tasks.length} 个，要更多传 limit，或传 task_id 只看一个）` : ''),
+  )
   if (tasks.length === 0) {
     lines.push('（台账里还没有任何委派记录）')
     return lines.join('\n')
@@ -253,9 +256,8 @@ export function renderStatus(value) {
     const filesPart = task.changed_files_determined === false
       ? '改动未探测'
       : `改动 ${files} 个文件`
-    const budgetPart = typeof task.budget_limit === 'number'
-      ? ` · 预算 ${task.budget_used ?? task.total_tokens ?? 0}/${task.budget_limit}${task.budget_over ? '（已超——下一轮会冷启动）' : ''}`
-      : ''
+    // tokens= 上面已经报过一次，这里只在真的超预算时点名，不让同一串数字重复占上下文
+    const budgetPart = task.budget_over === true ? ' · 已超预算（下一轮会冷启动）' : ''
     const workerPart = typeof task.worker === 'string' && task.worker !== '' ? ` · 工人 ${task.worker}` : ''
     const stallPart = typeof task.stall_warnings === 'number' && task.stall_warnings > 0
       ? ` · 停滞报警 ${task.stall_warnings} 次`
