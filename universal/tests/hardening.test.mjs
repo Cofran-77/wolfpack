@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { join } from 'node:path'
-import { writeFile, unlink } from 'node:fs/promises'
+import { writeFile, unlink, mkdir, symlink } from 'node:fs/promises'
 import { filesystemSnapshot } from '../src/artifacts.mjs'
 import { runDelegateTask, killRun, takeArtifactSnapshot, diffArtifacts, setDefaultRuntime } from '../src/delegate.mjs'
 import { resetDefaultRuntime, getDefaultRuntime } from '../src/runtime/registry.mjs'
@@ -63,6 +63,18 @@ export const tests = [
       assert.equal(diffArtifacts(snapshot, snapshot).determined, false)
       const excluded = await filesystemSnapshot(dir, { excludePaths: [join(dir, 'b.txt')] })
       assert.deepEqual([...excluded.filesystem.keys()], ['a.txt'])
+    } finally { cleanTempDir(dir) }
+  } },
+  { name: 'filesystem-excludes-state-through-directory-alias', async run() {
+    const dir = createTempDir()
+    try {
+      const actual = join(dir, 'actual')
+      const alias = join(dir, 'alias')
+      await mkdir(actual)
+      await writeFile(join(actual, 'runs.ndjson'), 'state')
+      await symlink(actual, alias, process.platform === 'win32' ? 'junction' : 'dir')
+      const snapshot = await filesystemSnapshot(actual, { excludePaths: [join(alias, 'runs.ndjson')] })
+      assert.equal(snapshot.filesystem.size, 0)
     } finally { cleanTempDir(dir) }
   } },
   { name: 'live-task-identities-never-collide', async run() {

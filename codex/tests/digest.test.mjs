@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 
 import { renderDigest, renderStatus } from '../src/digest.mjs'
-import { cleanTempDir, createTempDir, projectRoot } from './test-helper.mjs'
+import { cleanTempDir, createTempDir, projectRoot, fakeWorkerPath } from './test-helper.mjs'
 
 export const tests = [
   {
@@ -99,6 +99,8 @@ export const tests = [
             env: {
               ...process.env,
               WOLFPACK_LEDGER: ledgerPath,
+              WOLFPACK_AGY: fakeWorkerPath,
+              WOLFPACK_CLAUDE: 'missing-claude-fixture',
             },
           },
         )
