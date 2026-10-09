@@ -2,7 +2,7 @@
 
 ## 仓库目录变更
 
-旧仓库根目录的 Codex 文件移动至 `codex/`，名称保留为 **Wolfpack for Codex**，包名仍是 `wolfpack-codex`。通用版位于 `universal/`，包名保留为 `wolfpack-unified`。未来 DSH 专供版位于 `dsh/`。
+旧仓库根目录的 Codex 文件移动至 `codex/`，名称保留为 **Wolfpack for Codex**，包名仍是 `wolfpack-codex`。通用版位于 `universal/`，包名保留为 `wolfpack-unified`。2026-10-10 已加入最新 DSH 专供版，当前安装目录为 `dsh/`。
 
 旧 MCP 配置中的 `<仓库>/bin/wolf-mcp.mjs` 应改为 `<仓库>/codex/bin/wolf-mcp.mjs`；切换通用版则改为 `<仓库>/universal/bin/wolf-mcp.mjs`。既有交付目录没有移动，正在使用旧绝对路径的客户端不会因此被改动。
 
@@ -18,7 +18,17 @@
 
 ## DSH 与兼容范围
 
-旧通用包中的 DSH Cordis 插件原样归档于 `dsh/archive/`，旧 `lib/index.js` 和历史兼容 exports 没有在新版通用包中发布。CLI 命令和 MCP 委派接口保留，工具由四个扩展为六个；新的程序化核心入口见 `universal/package.json` 的 exports。依赖旧 DSH/lib 内部接口的调用方需等待专供版迁移。
+旧通用包中的 DSH Cordis 插件原样归档于 `dsh/archive/`，不再是当前安装入口。最新 DSH 专供版保存于 `dsh/lib/`，带 Cordis 入口、前端、provider、四工具、工人启用选择和原生面板。使用 `dsh plugin --profile <profile> add <仓库绝对路径>/dsh` 接入；切换前按 `dsh/docs/CUTOVER.md` 备份 profile 与配置。
+
+DSH 的包名保留 `wolfpack-unified`，适配既有 patch 名称。通用版也使用这个历史包名，不能将两者混装或相互替换。要同时使用，指定不同目录与状态路径。
+
+DSH 插件配置通过宿主 Config 读取，enabled、agy_enabled、claude_enabled 即时更新；CLI/MCP 则读取 wolfpack.config.json 和环境变量。不要将通用版 JSON 配置直接当作 DSH 插件设置。DSH 默认 agy 开、Claude 关，需勾选 Claude 才进入双工人候选集合。
+
+新版通用包没有发布旧 Cordis `lib/index.js` 和兼容外壳；程序化入口见 universal/package.json 的 exports。DSH 版保留自身兼容外壳与旧导出，但三个版本独立维护；具体支持范围和后端边界见各版 README。
+
+## 文档保留
+
+仓库总 README 恢复为详细的产品介绍、三版对比与安装指南；DSH 保留完整源码交付手册，Codex 详细手册继续维护，通用版增加机制与排查说明。旧 Codex 仓库的完整介绍保存在 docs/history/README-CODEX-ORIGINAL.md；其中旧路径以当前文档为准。历史 archive 不删除。
 
 ## 当前边界
 

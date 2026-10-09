@@ -1,0 +1,18 @@
+# 依赖（本项目 CLI / MCP 入口零第三方运行时依赖，正常无需安装）
+node_modules/
+pnpm-lock.yaml
+
+# 运行期产物（台账 / 原始工人输出 / 停滞告警 / 落盘 spill）
+wolfpack.config.json
+runs.ndjson
+raw/
+live/
+stall.ndjson
+*.log
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp

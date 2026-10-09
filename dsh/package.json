@@ -1,0 +1,76 @@
+{
+  "name": "wolfpack-unified",
+  "version": "2.1.0",
+  "private": false,
+  "description": "Wolfpack Mode: one host-neutral core + swappable worker adapters, serving a DSH Cordis plugin, a CLI and an MCP stdio server alike. 狼群模式统一项目：同一份宿主无关核 + 可插拔工人适配器，同时服务 DSH 插件 / CLI / MCP 三种宿主",
+  "keywords": [
+    "dsh-plugin",
+    "cosmokit",
+    "cordis",
+    "mcp",
+    "wolfpack",
+    "agent-delegation",
+    "antigravity",
+    "agy"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "bin": {
+    "wolf": "./bin/wolf.mjs",
+    "wolf-mcp": "./bin/wolf-mcp.mjs"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./runtime/dsh": "./lib/runtime/dsh.mjs",
+    "./runtime/node": "./lib/runtime/node.mjs",
+    "./core/config": "./lib/core/config.mjs",
+    "./core/spawn": "./lib/core/spawn.mjs",
+    "./core/verify": "./lib/core/verify.mjs",
+    "./core/ledger": "./lib/core/ledger.mjs",
+    "./core/digest": "./lib/core/digest.mjs",
+    "./core/delegate": "./lib/core/delegate.mjs",
+    "./core/team": "./lib/core/team.mjs",
+    "./core/live": "./lib/core/live.mjs",
+    "./core/worker": "./lib/core/worker/index.mjs",
+    "./runner": "./lib/agy-runner.js",
+    "./provider": "./lib/agy-provider.js",
+    "./delegate": "./lib/wolf-delegate.js",
+    "./ledger": "./lib/runs-ledger.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node tests/run.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-modules",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "bin",
+    "tools",
+    "briefing.md",
+    "docs",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh-subagent": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
