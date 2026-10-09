@@ -1,0 +1,37 @@
+{
+  "name": "wolfpack-unified",
+  "version": "2.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Host-neutral, zero-dependency CLI and MCP task delegation with agy and Claude Code workers",
+  "bin": {
+    "wolf": "./bin/wolf.mjs",
+    "wolf-mcp": "./bin/wolf-mcp.mjs"
+  },
+  "scripts": {
+    "test": "node tests/run.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {},
+  "license": "MIT",
+  "exports": {
+    "./core/config": "./src/config.mjs",
+    "./core/delegate": "./src/delegate.mjs",
+    "./core/worker": "./src/worker/index.mjs",
+    "./core/team": "./src/team.mjs",
+    "./runtime/node": "./src/runtime/node.mjs",
+    "./runtime/dsh": "./src/runtime/dsh.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "briefing.md",
+    "wolfpack.config.example.json",
+    "LICENSE",
+    "docs"
+  ]
+}

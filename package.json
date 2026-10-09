@@ -1,18 +1,8 @@
 {
-  "name": "wolfpack-codex",
-  "version": "1.1.0",
+  "name": "wolfpack-suite",
+  "version": "2.1.0",
   "private": true,
-  "type": "module",
-  "description": "Standalone, zero-dependency, portable wolfpack delegation engine for OpenAI Codex CLI with Antigravity CLI and Claude Code CLI workers, including per-worker health cooldown and live stall monitoring",
-  "bin": {
-    "wolf": "./bin/wolf.mjs",
-    "wolf-mcp": "./bin/wolf-mcp.mjs"
-  },
-  "scripts": {
-    "test": "node tests/run.mjs"
-  },
-  "engines": {
-    "node": ">=20"
-  },
-  "dependencies": {}
+  "description": "Wolfpack editions: universal CLI/MCP, Codex, and future DSH integration",
+  "scripts": { "test": "node scripts/test.mjs" },
+  "engines": { "node": ">=20" }
 }

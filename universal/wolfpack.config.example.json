@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "worker": "auto",
+  "agyPath": "agy",
+  "claudePath": "claude",
+  "claudeModel": null,
+  "claudePermissionMode": null,
+  "claudeAgents": null,
+  "mode": "accept-edits",
+  "model": null,
+  "effort": null,
+  "ledgerPath": null,
+  "rawDir": null,
+  "taskTimeoutMs": 0,
+  "verifyTimeoutMs": 300000,
+  "continuationTokenBudget": 1000000,
+  "maxRoundsPerTask": null,
+  "unknownUsageRoundCap": 20,
+  "shell": null,
+  "concurrency": 2,
+  "workerHealth": {
+    "enabled": true,
+    "failThreshold": 2,
+    "cooldownMs": 600000,
+    "capacityCooldownMs": 300000,
+    "timeoutCooldownMs": 600000,
+    "authCooldownMs": 1800000,
+    "filePath": null
+  },
+  "stall": {
+    "windowSeconds": 300,
+    "windowSecondsByWorker": {
+      "agy": 300,
+      "claude": 300
+    },
+    "warnings": 3,
+    "warningsByWorker": null,
+    "pollSeconds": 30,
+    "toast": false,
+    "storeRoots": {
+      "agy": null,
+      "claude": null
+    }
+  },
+  "stallLogPath": null,
+  "panelPort": 8787,
+  "panelHost": "127.0.0.1",
+  "panelToken": null,
+  "panelRefreshMs": 3000
+}

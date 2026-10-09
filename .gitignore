@@ -8,3 +8,7 @@ wolfpack.config.json
 *.ndjson
 .DS_Store
 Thumbs.db
+
+*.zip
+*.tgz
+backup*/
