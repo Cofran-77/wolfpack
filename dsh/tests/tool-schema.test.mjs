@@ -13,7 +13,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 
@@ -24,6 +24,7 @@ import {
   registerWolfTeam,
 } from './index.js'
 import { RunsLedger } from './runs-ledger.js'
+import { toLosslessJson, losslessViolations } from './core/lossless.mjs'
 
 let pass = 0
 let fail = 0
@@ -122,12 +123,20 @@ const baseConfig = ledger => ({
   verifyTimeoutMs: 5_000,
 })
 
+/** 断言对象符合宿主 lossless JSON 判据。 */
+function assertLosslessValid(toolName, value) {
+  const issues = losslessViolations(value)
+  assert.deepEqual(issues, [], `${toolName} 的返回对象不是 lossless JSON（会被宿主整份丢弃）：\n  ${issues.join('\n  ')}`)
+  return value
+}
+
 /** 用 harness 自己的校验器验一个工具的返回对象。 */
 function assertOutputValid(toolName, definition, value) {
   assert.ok(definition?.output?.schema, `${toolName} 没有声明 output.schema`)
   const violations = validateJsonSchemaValue(definition.output.schema, value)
   assert.ok(Array.isArray(violations), `${toolName} 校验器返回值不是数组`)
   assert.deepEqual(violations, [], `${toolName} 的返回对象过不了 output.schema：\n  ${violations.join('\n  ')}\n返回对象键：${Object.keys(value ?? {}).join(', ')}`)
+  assertLosslessValid(toolName, value)
   return value
 }
 
@@ -210,6 +219,113 @@ t('Y-g: 四个工具的 output.schema 都禁掉了未声明字段（additionalPr
   for (const [name, definition] of ctx.registry.defs) {
     assert.equal(definition.output.schema.additionalProperties, false, `${name} 必须显式 additionalProperties: false`)
   }
+})
+
+await ta('Y-h: wolf_delegate 在「健康文件有条目且未冷却」时的返回是 lossless JSON（真实盲区修复）', async () => {
+  const healthFile = join(TMP, 'y-h-health.json')
+  const now = Date.now()
+  await writeFile(healthFile, JSON.stringify({
+    version: 1,
+    updatedAt: now,
+    workers: {
+      agy: {
+        consecutiveFailures: 0,
+        totalFailures: 0,
+        benchedUntil: 0,
+        lastOutcome: 'success',
+        lastSuccessAt: now,
+      },
+    },
+  }, null, 2), 'utf8')
+
+  const ctx = fakeCtx({ baselineExit: 1, verifyExit: 0 })
+  const cfg = {
+    ...baseConfig(new RunsLedger(join(TMP, 'y-h.ndjson'))),
+    workerHealth: {
+      enabled: true,
+      filePath: healthFile,
+    },
+  }
+  registerWolfDelegate(ctx, cfg)
+  const value = await ctx.registry.defs.get('wolf_delegate').execute(
+    { task_id: 'y-h', task: 'x', verify_baseline: ['exit 1'], verify: ['echo ok'] },
+    agentExec(),
+  )
+  assert.equal(value.verdict, 'pass')
+  assert.ok(value.worker_health, '必须包含 worker_health')
+  assert.equal(value.worker_health.worker, 'agy')
+  assert.equal(value.worker_health.benched, false)
+  assert.equal('benched_until' in value.worker_health, false, '未冷却时 benched_until 必须缺席')
+  assert.equal('remaining_ms' in value.worker_health, false, '未冷却时 remaining_ms 必须缺席')
+  assertOutputValid('wolf_delegate', ctx.registry.defs.get('wolf_delegate'), value)
+})
+
+await ta('Y-i: 复现真实事故：工人运行失败带 lastDiagnostic/lastReason 时，返回值完整保留失败原因且为 lossless JSON', async () => {
+  const healthFile = join(TMP, 'y-i-health.json')
+  const ctx = fakeCtx({
+    baselineExit: 1,
+    agyExit: 1,
+    verifyExit: 1,
+    agyJson: JSON.stringify({
+      status: 'FAILED',
+      response: 'Error: API rate limit exceeded: 503 No capacity available',
+      error: 'capacity',
+      diagnostic: 'API rate limit exceeded on endpoint /v1/chat: 503 No capacity available',
+      duration_seconds: 2,
+    }),
+  })
+  const cfg = {
+    ...baseConfig(new RunsLedger(join(TMP, 'y-i.ndjson'))),
+    workerHealth: {
+      enabled: true,
+      filePath: healthFile,
+    },
+  }
+  registerWolfDelegate(ctx, cfg)
+  const value = await ctx.registry.defs.get('wolf_delegate').execute(
+    { task_id: 'y-i', task: 'x', verify_baseline: ['exit 1'], verify: ['npm test'] },
+    agentExec(),
+  )
+  assertOutputValid('wolf_delegate', ctx.registry.defs.get('wolf_delegate'), value)
+  assert.equal(value.verdict, 'fail')
+  assert.equal(value.stop_reason, 'capacity')
+  assert.equal(value.capacity, true)
+  assert.ok(
+    value.diagnostic?.includes('No capacity available') || value.report?.includes('No capacity available'),
+    '返回值中必须保留失败原因诊断',
+  )
+  assert.ok(value.worker_health, '必须包含 worker_health')
+  assert.equal(value.worker_health.last_reason, 'capacity', 'worker_health 中必须包含 last_reason=capacity')
+  assert.ok(
+    value.worker_health.last_diagnostic?.includes('No capacity available'),
+    'worker_health 中必须包含 last_diagnostic 诊断文案',
+  )
+  assert.equal('last_success_at' in value.worker_health, false, '失败条目中未成功的字段必须缺席')
+})
+
+t('Y-j: 宿主 lossless 判据与 toLosslessJson 防线机制（嵌套 undefined、NaN、Infinity、-0、非纯对象、成环全量校验）', () => {
+  // 1. 宿主 lossless 判据能准确拦截各种非法情况
+  assert.ok(losslessViolations({ a: undefined }).length > 0, '未拦截嵌套 undefined')
+  assert.ok(losslessViolations({ a: { b: undefined } }).length > 0, '未拦截深度嵌套 undefined')
+  assert.ok(losslessViolations({ a: NaN }).length > 0, '未拦截 NaN')
+  assert.ok(losslessViolations({ a: Infinity }).length > 0, '未拦截 Infinity')
+  assert.ok(losslessViolations({ a: -0 }).length > 0, '未拦截 -0')
+  assert.ok(losslessViolations({ a: new Date() }).length > 0, '未拦截非纯对象')
+  const cycle = {}
+  cycle.self = cycle
+  assert.ok(losslessViolations(cycle).length > 0, '未拦截成环')
+
+  // 2. toLosslessJson 清洗对象属性中的 undefined
+  const cleaned = toLosslessJson({ a: 1, b: undefined, c: { d: undefined, e: 'ok' } })
+  assert.deepEqual(cleaned, { a: 1, c: { e: 'ok' } })
+  assert.deepEqual(losslessViolations(cleaned), [])
+
+  // 3. toLosslessJson 对数组中的 undefined 显式抛错（上游 bug 禁止静默抹平）
+  assert.throws(() => toLosslessJson([1, undefined, 2]), /数组元素.*为 undefined/)
+
+  // 4. toLosslessJson 对非法数字显式抛错（禁止静默改成 0）
+  assert.throws(() => toLosslessJson({ val: -0 }), /-0/)
+  assert.throws(() => toLosslessJson({ val: NaN }), /非有限数字/)
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

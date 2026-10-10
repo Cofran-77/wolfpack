@@ -1397,5 +1397,170 @@ await ta('W-m: 取消最后一个勾选会被拦下，不产生清空工人池�
   }
 })
 
+const walkTree = (node, visit) => {
+  if (!node || typeof node !== 'object') return
+  if (node.props) visit(node)
+  for (const child of node.children ?? []) walkTree(child, visit)
+}
+const allWorkerRows = root => {
+  const rows = []
+  walkTree(root, node => { if (node.props && node.props['data-worker']) rows.push(node) })
+  return rows
+}
+const findWorkerToggle = (root, name) => {
+  let found
+  walkTree(root, node => {
+    if (node.props && node.props['data-worker-toggle'] === name) found = node
+  })
+  return found
+}
+const clickToggle = node => {
+  const handler = typeof node.props.onClick === 'function' ? node.props.onClick : node.props.onChange
+  if (typeof handler !== 'function') throw new Error('该控件没有 onClick/onChange')
+  handler({ preventDefault() {}, stopPropagation() {}, target: {} })
+}
+
+const sampleNames = [
+  'agy', 'claude', 'codex', 'gemini', 'qwen', 'opencode', 'iflow', 'crush',
+  'goose', 'aider', 'copilot', 'cursor', 'amp', 'droid', 'auggie', 'cline',
+  'continue', 'openhands', 'oz', 'plandex', 'kimi', 'mcode', 'codebuddy',
+  'qoder', 'trae', 'comate', 'spark', 'codebuff',
+]
+const sample28 = sampleNames.map(name => ({
+  name,
+  label: `${name} worker`,
+  bin: name,
+  installed: name !== 'qwen',
+  core: name === 'agy' || name === 'claude',
+}))
+
+await ta('W-n: 输入框工人下拉：按快照里的 workers_roster 渲染全部 28 行', async () => {
+  const before = SNAPSHOT.value
+  SNAPSHOT.value = {
+    enabled: true,
+    workers_enabled: 'agy,codex',
+    workers_roster: JSON.stringify({ version: 1, workers: sample28 }),
+  }
+  try {
+    const chip = componentFor('conversation.input.right')
+    const root = chip()
+    const rows = allWorkerRows(root)
+    if (rows.length !== 28) throw new Error(`应渲染 28 行，实际 ${rows.length}`)
+    const names = rows.map(r => r.props['data-worker']).sort()
+    if (JSON.stringify(names) !== JSON.stringify(sampleNames.slice().sort())) {
+      throw new Error(`28 个工人名单不一致：${JSON.stringify(names)}`)
+    }
+  } finally {
+    SNAPSHOT.value = before
+  }
+})
+
+await ta('W-o: 输入框工人下拉：启用态与可用状态正确标记在每行上', async () => {
+  const before = SNAPSHOT.value
+  SNAPSHOT.value = {
+    enabled: true,
+    workers_enabled: 'agy,codex',
+    workers_roster: JSON.stringify({ version: 1, workers: sample28 }),
+  }
+  try {
+    const root = componentFor('conversation.input.right')()
+    const rows = allWorkerRows(root)
+    const onWorkers = rows.filter(r => r.props['data-enabled'] === 'true').map(r => r.props['data-worker']).sort()
+    if (JSON.stringify(onWorkers) !== JSON.stringify(['agy', 'codex'])) {
+      throw new Error(`启用态应为 [agy, codex]，实际 ${JSON.stringify(onWorkers)}`)
+    }
+    const qwen = rows.find(r => r.props['data-worker'] === 'qwen')
+    if (qwen.props['data-installed'] !== 'false') {
+      throw new Error(`qwen 未安装应为 data-installed=false，实际 ${qwen.props['data-installed']}`)
+    }
+    const agy = rows.find(r => r.props['data-worker'] === 'agy')
+    if (agy.props['data-installed'] !== 'true') {
+      throw new Error(`agy 已安装应为 data-installed=true，实际 ${agy.props['data-installed']}`)
+    }
+  } finally {
+    SNAPSHOT.value = before
+  }
+})
+
+await ta('W-p: 输入框工人下拉：勾选与取消勾选写 workers_enabled CSV', async () => {
+  const before = SNAPSHOT.value
+  writes.length = 0
+  SNAPSHOT.value = {
+    enabled: true,
+    workers_enabled: 'agy,codex',
+    workers_roster: JSON.stringify({ version: 1, workers: sample28 }),
+  }
+  try {
+    // 勾选 gemini
+    let root = componentFor('conversation.input.right')()
+    const geminiToggle = findWorkerToggle(root, 'gemini')
+    if (!geminiToggle) throw new Error('找不到 gemini 勾选控件')
+    clickToggle(geminiToggle)
+    const lastWrite = writes.filter(w => w.field === 'workers_enabled').pop()
+    if (!lastWrite) throw new Error('没有写入 workers_enabled')
+    const set1 = lastWrite.value.split(',').map(s => s.trim())
+    if (!set1.includes('gemini') || !set1.includes('agy') || !set1.includes('codex')) {
+      throw new Error(`写入的 CSV 必须包含 agy, codex, gemini，实际: ${lastWrite.value}`)
+    }
+
+    // 取消勾选 codex
+    SNAPSHOT.value = {
+      enabled: true,
+      workers_enabled: 'agy,codex,gemini',
+      workers_roster: JSON.stringify({ version: 1, workers: sample28 }),
+    }
+    root = componentFor('conversation.input.right')()
+    const codexToggle = findWorkerToggle(root, 'codex')
+    if (!codexToggle) throw new Error('找不到 codex 勾选控件')
+    clickToggle(codexToggle)
+    const lastWrite2 = writes.filter(w => w.field === 'workers_enabled').pop()
+    const set2 = lastWrite2.value.split(',').map(s => s.trim())
+    if (set2.includes('codex') || !set2.includes('agy') || !set2.includes('gemini')) {
+      throw new Error(`codex 应被移除，且保留 agy 与 gemini，实际: ${lastWrite2.value}`)
+    }
+  } finally {
+    SNAPSHOT.value = before
+  }
+})
+
+await ta('W-q: 输入框工人下拉：取消勾选最后一个启用的工人会被拦下', async () => {
+  const before = SNAPSHOT.value
+  writes.length = 0
+  SNAPSHOT.value = {
+    enabled: true,
+    workers_enabled: 'agy',
+    workers_roster: JSON.stringify({ version: 1, workers: sample28 }),
+  }
+  try {
+    const root = componentFor('conversation.input.right')()
+    const agyToggle = findWorkerToggle(root, 'agy')
+    if (!agyToggle) throw new Error('找不到 agy 勾选控件')
+    clickToggle(agyToggle)
+    const badWrites = writes.filter(w => w.field === 'workers_enabled')
+    for (const w of badWrites) {
+      const items = w.value.split(',').map(s => s.trim()).filter(Boolean)
+      if (items.length === 0 || !items.includes('agy')) {
+        throw new Error(`清空工人池的写入必须被拦下，实际写了: ${w.value}`)
+      }
+    }
+  } finally {
+    SNAPSHOT.value = before
+  }
+})
+
+await ta('W-r: 输入框工人下拉：无 workers_roster 登记表时优雅降级兼容', async () => {
+  const before = SNAPSHOT.value
+  SNAPSHOT.value = { enabled: true }
+  try {
+    const root = componentFor('conversation.input.right')()
+    const sw = byRole(root, 'switch')
+    if (!sw) throw new Error('缺登记表时主开关必须仍在')
+    const rows = allWorkerRows(root)
+    if (rows.length !== 0) throw new Error(`缺登记表时 data-worker 行数应为 0，实际 ${rows.length}`)
+  } finally {
+    SNAPSHOT.value = before
+  }
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

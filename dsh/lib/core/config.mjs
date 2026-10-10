@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { defaultLedgerPath } from './ledger.mjs'
+import { WORKER_SPECS } from './worker/specs.mjs'
 
 /**
  * 将路径中的 ~ 展开为当前用户家目录。
@@ -130,6 +131,55 @@ export function loadConfig(overrides = {}, cwd = process.cwd(), env = process.en
   const claudeModel = env.WOLFPACK_CLAUDE_MODEL ?? merged.claudeModel ?? undefined
   const claudePermissionMode = env.WOLFPACK_CLAUDE_PERMISSION_MODE || merged.claudePermissionMode || undefined
   const claudeAgents = env.WOLFPACK_CLAUDE_AGENTS ?? merged.claudeAgents ?? undefined
+
+  // 2.2 其余规格工人路径与状态透传
+  const specPaths = {}
+  const workerContracts = {
+    agy: 'documented',
+    claude: 'documented',
+  }
+  const workerConfidences = {
+    agy: 'high',
+    claude: 'high',
+  }
+  for (const spec of WORKER_SPECS) {
+    const nameUpper = spec.name.toUpperCase().replace(/-/g, '_')
+    const envVal = env['WOLFPACK_' + nameUpper]
+    const rawPath = envVal || merged[spec.name + 'Path'] || spec.bin
+    specPaths[spec.name + 'Path'] = resolveHome(rawPath)
+    workerContracts[spec.name] = spec.contract
+    workerConfidences[spec.name] = spec.confidence
+  }
+
+  let workersEnabled = merged.workersEnabled
+  if (workersEnabled === undefined) {
+    const rawEnabledStr = env.WOLFPACK_WORKERS_ENABLED || merged.workers_enabled
+    if (typeof rawEnabledStr === 'string' && rawEnabledStr.trim() !== '') {
+      workersEnabled = rawEnabledStr.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+    } else if (merged.agy_enabled !== undefined || merged.claude_enabled !== undefined) {
+      const agyRaw = merged.agy_enabled
+      const claudeRaw = merged.claude_enabled
+      const agyVal = agyRaw !== null && typeof agyRaw === 'object' && typeof agyRaw.get === 'function' ? agyRaw.get() : agyRaw
+      const claudeVal = claudeRaw !== null && typeof claudeRaw === 'object' && typeof claudeRaw.get === 'function' ? claudeRaw.get() : claudeRaw
+
+      const agyOn = agyVal !== undefined
+        ? (agyVal !== false && String(agyVal).trim().toLowerCase() !== 'false')
+        : true
+      const claudeOn = claudeVal !== undefined
+        ? (claudeVal === true || String(claudeVal).trim().toLowerCase() === 'true')
+        : false
+
+      if (agyOn && claudeOn) {
+        workersEnabled = undefined
+      } else if (agyOn) {
+        workersEnabled = ['agy']
+      } else if (claudeOn) {
+        workersEnabled = ['claude']
+      } else {
+        workersEnabled = []
+      }
+    }
+  }
 
   // 3. 执行模式
   const mode = env.WOLFPACK_MODE || merged.mode || 'accept-edits'
@@ -261,5 +311,10 @@ export function loadConfig(overrides = {}, cwd = process.cwd(), env = process.en
     workerHealth,
     graceMs: 5_000,
     configPath,
+    ...specPaths,
+    workerContracts,
+    workerConfidences,
+    ...(workersEnabled !== undefined ? { workersEnabled } : {}),
+    env,
   }
 }

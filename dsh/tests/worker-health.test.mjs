@@ -90,6 +90,19 @@ t('Z-a: classifyFaultKind 与状态/文本判定', () => {
   assert.equal(matchCapacity({ texts: ['Overloaded'] }), true)
   assert.equal(matchCapacity({ raw: '我今天重写了容量不足的提示文案' }), false)
   assert.equal(matchAuth({ texts: ['未登录'] }), true)
+
+  const REAL_AUTH_RAW = 'Failed to authenticate. API Error: 403 该令牌无权访问模型 claude-opus-5-5'
+  assert.equal(matchAuth({ texts: [REAL_AUTH_RAW] }), true)
+  assert.equal(matchAuth({ raw: REAL_AUTH_RAW }), true)
+  assert.equal(classifyFaultKind({ stopReason: 'error', texts: ['claude exit 1: 无错误详情'], raw: REAL_AUTH_RAW }), 'auth')
+  assert.equal(classifyFaultKind({ stopReason: 'error', status: 403 }), 'auth')
+
+  // 反例：普通失败或正文偶现 403/error 绝不误判为 auth
+  assert.equal(classifyFaultKind({ stopReason: 'error', texts: ['测试失败'], raw: '{"status":"ERROR","error":"测试失败"}' }), 'error')
+  assert.equal(classifyFaultKind({ stopReason: 'error', raw: 'Error: expected 403 status code but got 200' }), 'error')
+  assert.equal(matchAuth({ raw: '普通失败，包含 403 状态码与 error 堆栈，用例全部执行完毕' }), false)
+  assert.equal(matchAuth({ texts: ['测试运行抛错：assertion failed'] }), false)
+
   // claude 适配器把状态码拼成 `API 402: …`，apiStatusFromText 只认这个形式
   assert.equal(apiStatusFromText('API 429: Too Many Requests'), 429)
   assert.equal(apiStatusFromText('没有任何状态码'), undefined)
@@ -98,7 +111,7 @@ t('Z-a: classifyFaultKind 与状态/文本判定', () => {
 // 2. health.mjs 状态演化与冷却计算
 t('Z-b: health 状态演化、阈值触发与成功清零', () => {
   const now = 1_700_000_000_000
-  const cfg = { workerHealth: { failThreshold: 2, cooldownMs: 60_000, capacityCooldownMs: 30_000 } }
+  const cfg = { workerHealth: { failThreshold: 2, cooldownMs: 60_000, capacityCooldownMs: 30_000, authCooldownMs: 120_000 } }
 
   let state = emptyHealthState()
   assert.equal(state.version, HEALTH_VERSION)
@@ -132,9 +145,20 @@ t('Z-b: health 状态演化、阈值触发与成功清零', () => {
   assert.equal(state.workers.agy.benchReason, 'capacity')
   assert.equal(faultLabel(snap3.last_reason), FAULT_LABELS.capacity)
 
+  // 鉴权错误：单次立刻进鉴权专用冷却
+  recordWorkerOutcome(state, { worker: 'claude', kind: 'auth', config: cfg, now })
+  const snapAuth = snapshotHealth(state, 'claude', now)
+  assert.equal(snapAuth.benched, true)
+  assert.equal(snapAuth.remaining_ms, 120_000)
+  assert.equal(snapAuth.last_reason, 'auth')
+  assert.equal(state.workers.claude.benchReason, 'auth')
+  assert.equal(faultLabel(snapAuth.last_reason), FAULT_LABELS.auth)
+
   // resetWorkerHealth
   resetWorkerHealth(state, 'agy')
   assert.equal(snapshotHealth(state, 'agy', now).benched, false)
+  resetWorkerHealth(state, 'claude')
+  assert.equal(snapshotHealth(state, 'claude', now).benched, false)
 })
 
 // 3. health.mjs 读写文件持久化

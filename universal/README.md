@@ -1,5 +1,7 @@
 # Wolfpack
 
+[English](README.en.md) | 简体中文 · [运行架构与执行逻辑](docs/ARCHITECTURE.md)
+
 宿主无关的本地任务委派引擎，提供 CLI 和 stdio MCP 入口。适用于支持本地 MCP 服务的 AI 客户端，也可供终端和自动化脚本使用。
 
 Node.js ≥20；无第三方运行时依赖，无需 `npm install`。真实派活需已安装并登录 Antigravity CLI (`agy`) 或 Claude Code CLI (`claude`)。没有工人时仍可读台账、查健康、运行离线测试。

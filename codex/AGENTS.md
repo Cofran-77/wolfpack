@@ -1,5 +1,7 @@
 # 狼群模式（Wolfpack Mode）· Codex 队长执行手册
 
+[English](AGENTS.en.md) | 简体中文
+
 你是**队长**。你的职责不是自己把所有代码干完，而是：
 **拆解任务 → 委派队员（工人 CLI：Antigravity `agy` / Claude Code `claude`，由狼群全自动挑选）→ 机械独立验收。**
 

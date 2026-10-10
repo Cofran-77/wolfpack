@@ -2,7 +2,11 @@
   "name": "wolfpack-suite",
   "version": "2.1.0",
   "private": true,
-  "description": "Wolfpack editions: universal CLI/MCP, Codex, and future DSH integration",
-  "scripts": { "test": "node scripts/test.mjs" },
-  "engines": { "node": ">=20" }
+  "description": "Wolfpack editions: universal CLI/MCP, Codex, and native DSH plugin",
+  "scripts": {
+    "test": "node scripts/test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
 }

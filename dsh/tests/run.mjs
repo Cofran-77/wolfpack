@@ -200,6 +200,10 @@ async function main() {
     'worker-health.test.mjs',
     'claude-worker.test.mjs',
     'worker-selection.test.mjs',
+    'worker-registry.test.mjs',
+    'worker-pin-regression.test.mjs',
+    'worker-roster.test.mjs',
+    'claude-cmd-fallback.test.mjs',
   ]
 
   await rm(staging, { recursive: true, force: true })

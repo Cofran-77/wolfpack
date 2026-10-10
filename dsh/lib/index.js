@@ -36,6 +36,7 @@ import {
   preflightAgy,
   runDelegateTask,
 } from './core/delegate.mjs'
+import { toLosslessJson } from './core/lossless.mjs'
 import {
   DEFAULT_VERIFY_TIMEOUT_MS,
   defaultShellArgv,
@@ -70,8 +71,13 @@ import {
 } from './core/worker/agy.mjs'
 import {
   findInPath,
+  getWorker,
   isWorkerAvailable,
+  listWorkers,
+  workerPathOf,
 } from './core/worker/index.mjs'
+import { WORKER_SPECS } from './core/worker/specs.mjs'
+import { buildWorkerRoster, workerRosterJson } from './core/worker/roster.mjs'
 import { createDshRuntime, DshRuntime } from './runtime/dsh.mjs'
 import { createDshToastNotifier, resolveStallConfig } from './stall-monitor.js'
 import { registerAgyProvider } from './agy-provider.js'
@@ -86,6 +92,16 @@ export {
   renderStatus,
   renderTeamDigest,
   runDelegateTask,
+}
+
+/** 模块加载时预探测生成的工人登记表 JSON */
+let defaultWorkersRoster = ''
+try {
+  defaultWorkersRoster = typeof workerRosterJson === 'function'
+    ? workerRosterJson()
+    : JSON.stringify({ version: 1, workers: buildWorkerRoster() })
+} catch {
+  defaultWorkersRoster = ''
 }
 
 /** Cordis 插件名，同时用作设置命名空间。 */
@@ -108,6 +124,8 @@ export const Config = z.object({
   // claude 默认关：本机 claude 无额度，默认开会让轮换把任务派给 claude 再失败。
   // 有额度时在狼群开关的「启用工人」里勾上即可。
   claude_enabled: z.boolean().default(false).volatile(),
+  workers_enabled: z.string().default('').volatile(),
+  workers_roster: z.string().default(defaultWorkersRoster).volatile().hidden(),
 })
 
 /** 设置命名空间。 */
@@ -180,6 +198,11 @@ function readEnabled(config) {
 /**
  * 把两个工人开关折成 `workersEnabled`（工人池收窄的唯一入口）。
  *
+ * 优先级顺序：
+ * 1. `workers_enabled` 非空 → 按逗号切分、trim、小写、去重，逐个校验名字已注册，未注册的忽略并记入 unknownWorkers；
+ * 2. 否则维持现有 `agy_enabled`/`claude_enabled` 逻辑（兜底必须等于 schema 默认值）；
+ * 3. 两者都没显式设置时，按 agy 开、claude 关兜底。
+ *
  * ⚠️ 兜底值必须**等于 Config 的 schema 默认值**（`agy_enabled` default true、
  * `claude_enabled` default false）。DSH 0.2.0 把 profile 里的**原始** config 交给
  * `apply(ctx, config)`——只写了 `enabled: true` 时两个工人键根本不存在；此时若按
@@ -187,6 +210,25 @@ function readEnabled(config) {
  * （本机 claude 无额度）。缺省关掉 claude 才是 schema 说的那个意思。
  */
 export function computeWorkersEnabled(config) {
+  const csv = readVolatile(config, 'workers_enabled', '')
+  if (typeof csv === 'string' && csv.trim() !== '') {
+    const rawList = csv.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+    const deduped = [...new Set(rawList)]
+    const allKnown = new Set(listWorkers().map(w => w.name))
+    const valid = []
+    const unknownWorkers = []
+    for (const name of deduped) {
+      if (allKnown.has(name)) {
+        valid.push(name)
+      } else {
+        unknownWorkers.push(name)
+      }
+    }
+    computeWorkersEnabled.unknownWorkers = unknownWorkers
+    return valid
+  }
+  computeWorkersEnabled.unknownWorkers = []
+
   const agyOn = readVolatile(config, 'agy_enabled', true) !== false
   const claudeOn = readVolatile(config, 'claude_enabled', false) !== false
   if (agyOn && claudeOn) return undefined // 两个都开等价于不限制
@@ -243,20 +285,33 @@ export function unknownUsageRoundCap(env = process.env) {
 export function runConfig(ctx, config) {
   const maxRounds = maxRoundsPerTask()
   const stall = resolveStallConfig()
-  const defaultHealth = loadConfig({ ledgerPath: LEDGER_PATH }).workerHealth
+  const loadedConfig = loadConfig({ ledgerPath: LEDGER_PATH })
+  const defaultHealth = loadedConfig.workerHealth
   const healthOff = ['off', 'none', '0', 'false', 'no'].includes(
     String(process.env.WOLFPACK_WORKER_HEALTH ?? '').trim().toLowerCase(),
   )
   const workerHealth = healthOff ? { enabled: false } : defaultHealth
 
+  const specPaths = {}
+  for (const spec of WORKER_SPECS) {
+    const key = spec.name + 'Path'
+    if (loadedConfig[key]) specPaths[key] = loadedConfig[key]
+  }
+
+  const workersEnabled = computeWorkersEnabled(config)
+  if (config && typeof config === 'object') {
+    config.workersEnabled = workersEnabled
+  }
+
   return {
     agyPath: AGY_PATH,
     claudePath: CLAUDE_PATH,
+    ...specPaths,
     ...(process.env.WOLFPACK_CLAUDE_MODEL === undefined ? {} : { claudeModel: process.env.WOLFPACK_CLAUDE_MODEL }),
     ...(process.env.WOLFPACK_CLAUDE_PERMISSION_MODE === undefined ? {} : { claudePermissionMode: process.env.WOLFPACK_CLAUDE_PERMISSION_MODE }),
     ...(process.env.WOLFPACK_CLAUDE_AGENTS === undefined ? {} : { claudeAgents: process.env.WOLFPACK_CLAUDE_AGENTS }),
     ...(process.env.WOLFPACK_WORKER === undefined ? {} : { worker: process.env.WOLFPACK_WORKER }),
-    workersEnabled: computeWorkersEnabled(config),
+    workersEnabled,
     workerHealth,
     ledger: new RunsLedger(LEDGER_PATH),
     mode: process.env.WOLFPACK_MODE ?? 'accept-edits',
@@ -502,17 +557,24 @@ export function registerWolfDelegate(ctx, config) {
       if (typeof cwd !== 'string' || cwd === '') {
         throw new Error('wolf_delegate 需要一个有工作目录的会话——当前会话没有 cwd')
       }
-      return runDelegateTask({
+      const effectiveWorkersEnabled = config?.workersEnabled !== undefined
+        ? config.workersEnabled
+        : computeWorkersEnabled(config)
+      const taskConfig = {
+        ...config,
+        ...(effectiveWorkersEnabled !== undefined ? { workersEnabled: effectiveWorkersEnabled } : {}),
+      }
+      return toLosslessJson(await runDelegateTask({
         runtime,
         ctx,
-        config,
+        config: taskConfig,
         args,
         exec,
         cwd,
         signal: exec.signal,
         verifyDeadline,
         toolDeadlineMs,
-      })
+      }))
     },
   }))
 }
@@ -611,13 +673,13 @@ export function registerWolfStatus(ctx, config) {
     async execute(args) {
       const ledger = config.ledger
       if (ledger === undefined) {
-        return omitUndefined({
+        return toLosslessJson(omitUndefined({
           tasks: [],
           total: 0,
           truncated: false,
           limit: DEFAULT_STATUS_LIMIT,
           ledger_path: undefined,
-        })
+        }))
       }
       const budgetLimit = typeof config?.continuationTokenBudget === 'number'
         && Number.isFinite(config.continuationTokenBudget)
@@ -656,13 +718,13 @@ export function registerWolfStatus(ctx, config) {
         .sort((left, right) => right.last_at - left.last_at)
 
       const limit = normalizeLimit(args.limit)
-      return omitUndefined({
+      return toLosslessJson(omitUndefined({
         tasks: rows.slice(0, limit),
         total: rows.length,
         truncated: rows.length > limit,
         limit,
         ledger_path: typeof ledger.filePath === 'string' ? ledger.filePath : undefined,
-      })
+      }))
     },
   }))
 }
@@ -729,9 +791,9 @@ export function registerWolfKill(ctx, config) {
       const ledger = config.ledger
       const result = await killRun(task_id, ledger, config)
       if (result.ok) {
-        return { ok: true, task_id: result.taskId, run_id: result.runId }
+        return toLosslessJson({ ok: true, task_id: result.taskId, run_id: result.runId })
       }
-      return { ok: false, reason: result.reason }
+      return toLosslessJson({ ok: false, reason: result.reason })
     },
   }))
 }
@@ -826,15 +888,22 @@ export function registerWolfTeam(ctx, config) {
     },
     isConcurrencySafe: () => true,
     async execute(args, exec = {}) {
-      return runTeamTasks({
+      const effectiveWorkersEnabled = config?.workersEnabled !== undefined
+        ? config.workersEnabled
+        : computeWorkersEnabled(config)
+      const teamConfig = {
+        ...config,
+        ...(effectiveWorkersEnabled !== undefined ? { workersEnabled: effectiveWorkersEnabled } : {}),
+      }
+      return toLosslessJson(await runTeamTasks({
         runtime,
         ctx,
-        config,
+        config: teamConfig,
         args,
         exec,
         verifyDeadline,
         toolDeadlineMs,
-      })
+      }))
     },
   }))
 }
@@ -904,10 +973,21 @@ function delegationFactory(ctx, config) {
     const targetWorkers = (Array.isArray(enabled) && enabled.length > 0) ? enabled : ['agy', 'claude']
     const availableWorkers = targetWorkers.filter(w => isWorkerAvailable(w, runtimeConfig))
 
+    if (computeWorkersEnabled.unknownWorkers?.length > 0) {
+      console.warn(
+        `wolfpack: workers_enabled 包含未注册的工人：${computeWorkersEnabled.unknownWorkers.join(', ')}。`,
+      )
+    }
+
     if (availableWorkers.length === 0) {
       const reasons = targetWorkers.map(w => {
         if (w === 'agy') return `agy: ${agyPreflight.ok ? '可用' : agyPreflight.reason}`
-        return `claude: 未找到可执行文件或 PATH 中未找到（路径: ${runtimeConfig.claudePath}）`
+        if (w === 'claude') return `claude: 未找到可执行文件或 PATH 中未找到（路径: ${runtimeConfig.claudePath}）`
+        const worker = getWorker(w)
+        const probe = typeof worker?.preflight === 'function' ? worker.preflight(runtimeConfig) : undefined
+        if (probe && !probe.ok) return `${w}: 预检未通过（${probe.reason}）`
+        const p = workerPathOf(w, runtimeConfig)
+        return `${w}: 未找到可执行文件或 PATH 中未找到（路径: ${p}）`
       }).join('；')
       runtimeConfig.agyUnavailable = `所有启用的工人均不可用（${reasons}）`
       console.warn(
@@ -921,8 +1001,14 @@ function delegationFactory(ctx, config) {
 
   function updateConfig() {
     runtimeConfig.workersEnabled = computeWorkersEnabled(config)
+    if (config && typeof config === 'object') {
+      config.workersEnabled = runtimeConfig.workersEnabled
+    }
     if (process.env.WOLFPACK_WORKER !== undefined) {
       runtimeConfig.worker = process.env.WOLFPACK_WORKER
+      if (config && typeof config === 'object') {
+        config.worker = runtimeConfig.worker
+      }
     }
     updatePreflight()
     logConfigReceipt(config, runtimeConfig)

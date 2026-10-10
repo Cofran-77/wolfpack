@@ -1,0 +1,21 @@
+name: Worker integration / 工人接入
+description: Propose a documented worker contract / 提议有契约依据的工人接入
+body:
+  - type: input
+    id: worker
+    attributes:
+      label: Worker, binary and version / 工人、命令和版本
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Public contract sources / 公开契约来源
+      description: Headless arguments, output format, session resume, permissions and cancellation. / 无头参数、输出、续跑、权限和取消。
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation status / 验证状态
+      description: Distinguish researched, detected, simulated and real authenticated runs. Remove private content. / 区分研究、路径检测、模拟和真实登录运行，删除私密内容。

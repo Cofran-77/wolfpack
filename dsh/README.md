@@ -1,5 +1,7 @@
 # Wolfpack for DSH · 狼群模式（Wolfpack Mode）
 
+[English](README.en.md) | 简体中文 · [运行架构与执行逻辑](docs/ARCHITECTURE.md) · [工人目录](docs/WORKERS.md)
+
 ## 本仓库首推的原生插件版
 
 DSH 是当前最适合 Wolfpack 原生交互的宿主：它将工具、配置、系统提示、子进程和前端都纳入“万物皆插件”的扩展机制。Wolfpack 不只是一个外部工具入口，而是在输入框和设置页提供开关，在开关旁选择工人，在对话中显示工具卡片，并在右侧面板持续观察任务。
@@ -27,7 +29,19 @@ DSH 是当前最适合 Wolfpack 原生交互的宿主：它将工具、配置、
 > 三者共用同一套设计；**只有本目录带 DSH 宿主的 Cordis 外壳**
 > ——对话里的开关、工人多选、工具卡片与右侧实时面板都在这一份里。
 
-**相对上一版（2.0.0）的主要变化**
+## 2026-10-10 工人目录升级
+
+本次源码包仍标 2.1.0；以下是新源码快照的升级，不额外宣称新语义版本。完整记录见 [升级说明](../docs/releases/2026-10-10-dsh-worker-registry.md)。
+
+- 目录收录 **28 项：2 个原生工人 + 26 个需主动启用的声明式工人**。新增 generic 适配与统一路径解析；目录收录不等于全部真实账号验证。iflow / codebuff 无头契约尚不确定，预检拒绝启动。
+- 前端使用宿主 workers_roster 动态展示目录，选择写入 workers_enabled；保留 agy_enabled / claude_enabled 旧开关。默认仍 agy 开、Claude 关。
+- 启用集合完整传递到委派核心；agy 冷却时不再越过选择范围改派被禁用的 Claude。
+- node bin/wolf.mjs workers（或 workers --json）离线检查路径；workers --probe 才显式运行 --version。显示已安装只表示找到了文件，不保证已登录、有额度或 CLI 契约兼容。
+- 工具和健康快照的 JSON 边界剔除对象中 undefined，拒绝无法无损表达的数据，避免宿主结果校验丢弃返回值。
+- Windows Claude 可从默认 .exe 回退 npm .cmd / .bat 启动器，含带空格路径回归测试。
+- 当前离线测试为 **306 例 / 11 套件**。DSH 仍提供 **4 个工具**，观察走原生侧栏与宿主路由。
+
+### 2.1.0 早期升级回顾（保留历史说明）
 
 - 新增 **Claude Code 工人适配器**（`lib/core/worker/claude.mjs`）与**自动挑选 / 轮换**
   （`worker` 默认从 `agy` 变为 `auto`）。
@@ -91,7 +105,8 @@ DSH 是当前最适合 Wolfpack 原生交互的宿主：它将工具、配置、
 不需要 `npm install`。
 
 ```bash
-# 0) 先确认核心没坏（不调用真实工人，用内置假进程承载）
+# 0) 可选维护检查：需 DSH peer 依赖及 DSH_HOME 或 WP_TEST_HOME
+# CLI/MCP 日常运行无需这些依赖；干净环境可从下方 status 开始
 node tests/run.mjs
 #   期望末行：全部通过      退出码 0
 
@@ -122,7 +137,7 @@ node bin/wolf.mjs kill --task-id demo-1
 node bin/wolf.mjs team --tasks "task1.json" --concurrency 2
 ```
 
-工人路径解析优先级：**环境变量 > 配置文件 > PATH 查找**，两个工人对称——
+工人路径解析优先级：**环境变量 > 配置文件 > PATH 查找**，两个核心工人路径对称——
 `WOLFPACK_AGY` / `agyPath`（默认 `agy.exe`）、`WOLFPACK_CLAUDE` / `claudePath`（默认 `claude`）。
 已在 PATH 里就什么都不用配。用哪个工人由 `WOLFPACK_WORKER` 决定：
 `auto`（默认，自动挑选 + 轮换）、`agy`、`claude`。
@@ -168,9 +183,9 @@ peer 依赖为 `@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-subagent`、
    `Config.enabled`（标了 `.volatile()`，命名空间就是条目 id `wolfpack`），
    写入由 loader 就地提交，开与关都不需要重启。关掉时四个工具整体摘除，不留残余。
 4. **选择用哪几个工人**：点开输入框右侧狼群按钮的下拉弹层，底部是
-   **启用工人（至少选一个）**——`Antigravity (agy)` / `Claude Code (claude)` 两个复选框，
+   **启用工人（至少选一个）**——`Antigravity (agy)` / `Claude Code (claude)` 原生复选框（新版还动态列出扩展目录），
    各带 `已启用` / `未启用` / `未安装` 状态文案；「设置 → 通用」的同一行里也有一份。
-   两处写的是同一对 `agy_enabled` / `claude_enabled`，不会互相说谎；
+   新版两处写 workers_enabled CSV；旧快照回退才写 agy_enabled / claude_enabled；
    取消最后一个勾选会被就地拒绝并提示「至少要启用一个工人」。
    **改完立刻生效、不需要重启宿主**——下一次派活就按新的工人集合挑选。
 
@@ -188,7 +203,7 @@ DSH、CLI、MCP 三个宿主下**同名同语义**（CLI 用子命令形式）�
 |---|---|---|---|
 | `wolf_delegate` | 派一件活并验收 | `task_id`\*、`task`\*、`verify[]`、`verify_baseline[]`、`fresh`、`model` | `verify_baseline` 是**派活前必须失败**的命令：任一条通过 → `stale` 且**完全不启动工人**；一条都没跑起来 → `error`（工具故障，不是工人失败） |
 | `wolf_status` | 只读台账 | `task_id`、`limit`（默认 20，上限 100） | **绝不启动工人、不跑验收、不消耗额度**；台账不存在也安全返回 |
-| `wolf_kill` | 终止运行中的工人进程树 | `task_id`\* | **跨进程有效**（靠 `<raw_dir>/live/<taskId>.json` 登记 + PID 探活） |
+| `wolf_kill` | 请求取消运行中的任务 | `task_id`\* | 同进程使用运行句柄；跨进程登记写入未接线，不能保证发现新任务 |
 | `wolf_team` | 受控并发小队（1–8 个任务，并发 1–4） | `tasks[]`\*、`concurrency` | 同一批里出现重复 `task_id` → **整批拒绝**，一个进程都不起；单个任务失败不影响其它 |
 
 \* 为必填。四个工具都声明了 `isConcurrencySafe = () => true`。
@@ -438,18 +453,11 @@ wolfpack: task_id "fix-build" 上已经有正在运行的 agy 会话（runId r-3
 - **拿不到任何心跳证据时绝不报警**——把「看不到」说成「卡住了」是最坏的假信息；
   存储根缺席 = 整个监控不启用（`start()` 返回 `false`，没有静默降级）。
 
-### 4.12 跨进程 kill：`wolf_kill` 真的能杀掉另一个进程里的工人
+### 4.12 取消：同进程句柄与跨进程边界
 
-运行中的工人会在 `<raw_dir>/live/<taskId>.json` 登记 `{ pid, workerPid, runId }`。
-`wolf_kill` 读到登记后用 `process.kill(pid, 0)` 探活（`EPERM` 也算存活），
-两个 PID 都死了就清理登记并如实返回 `该运行已结束`；活着则杀进程树，
-并把该轮在台账里记为 **`aborted`**（`note: 'killed-cross-process'`），而不是正常完成。
-**杀不存在的任务明确返回失败，不假装成功。**
+同进程通过运行句柄取消。Node Runtime 的 terminate 使用 Windows taskkill /T /F 或 POSIX 进程组终止；这不等于跨进程分支具备相同语义。
 
-进程树如何真的被杀干净（宿主相关）：Windows 上 `taskkill /PID <pid> /T /F`；
-POSIX 上直接 `SIGKILL` **进程组**（`process.kill(-pid, 'SIGKILL')`），失败才回落单进程
-`SIGKILL`——没有 SIGTERM 阶段、没有两段等待；`terminate()` 只等
-`min(graceMs, 2000)`（默认 2000 ms）。
+当前委派流程未调用 writeLiveRecord，不能保证新任务登记在 `<raw_dir>/live/<taskId>.json` 中。已有记录的跨进程分支会 PID 探活，随后直接 SIGKILL 工人 PID 与宿主 PID，并写 aborted / killed-cross-process；它没有进程树完整性保证，而且可能终止承载其他任务的共享宿主。不要把它视为精确的跨进程单任务取消机制。不存在任务返回失败。
 
 ### 4.13 通知 vs 工具故障：`error` 与 `fail` 的区别贯穿全文
 
@@ -518,10 +526,10 @@ digest 每轮都交代本轮的宿主侧预算，防止队长把「宿主掐断�
 - **一次开关，两处一致**：输入框右侧的 `WolfpackChip` 与「设置 → 通用」的 `WolfpackRow`
   写的是同一个 `Config.enabled`（`.volatile()`），两处状态不许互相说谎，
   设置只读时两处一起禁用。开/关**不需要重启**宿主：工具整体挂上/摘除。
-- **工人多选就在开关旁边**：同一对 UI 里写 `agy_enabled` / `claude_enabled`，
+- **工人多选就在开关旁边**：新版 UI 写 workers_enabled CSV；旧快照回退保留 agy_enabled / claude_enabled，
   状态文案由 `workerStatusText(enabled, installed)` 统一给出
   （`未安装` / `已启用` / `未启用`；`*_installed` 由 Host 侧预检结果回填）。
-  两个都勾 = 不限制（交给自动轮换），只勾一个 = 只用它；宿主侧
+  界面现在由 workers_roster 动态渲染，非空 workers_enabled 限定候选集合；为空则保留旧 agy_enabled / claude_enabled 逻辑。只选一个 = 只用它，多选 = 在集合内挑选；宿主侧
   `computeWorkersEnabled()` 把集合翻译成 `workersEnabled`，再由
   `resolveWorkerSelection()` 收窄候选池——**核不知道 UI 的存在**。
 - **键缺省时按 schema 默认值兜底：`agy` 开、`claude` 关**。这一点值得单独写清楚，
@@ -596,13 +604,13 @@ spawn({ argv, cwd, stdio, graceMs, signal }) → {
 
 **换一个工人 = 新增一个适配器文件**（`lib/core/worker/<name>.mjs`，导出
 `name` / `preflight` / `buildArgv` / `extractSessionId` / `parse` / `classify` 六项），
-注册进 `lib/core/worker/index.mjs` 的 registry 即可，核一行不改。当前已注册两个适配器，
+注册进 `lib/core/worker/index.mjs` 的 registry 即可，核一行不改。当前有两个原生适配器及目录声明驱动的 generic 适配器，
 挑选与冷却规则见 4.19。
 
-### 4.19 两个工人：自动挑选、轮换与健康冷却
+### 4.19 工人目录：自动挑选、轮换与健康冷却
 
 工人适配器住在 `lib/core/worker/`，每个文件导出同一组六项契约，注册进
-`worker/index.mjs` 的 registry 就能被挑选器看见。当前注册两个：
+`worker/index.mjs` 的 registry 就能被挑选器看见。两个原生适配如下；扩展目录与契约边界见 [WORKERS](docs/WORKERS.md)：
 
 | 适配器 | 工人 | 续跑方式 |
 |---|---|---|
@@ -703,13 +711,13 @@ digest 会把冷却如实写出来（`lib/core/digest.mjs:134-158`）：谁被�
 | | DSH Cordis 插件 | CLI / MCP |
 |---|---|---|
 | 配置来源 | 插件自己的 `Config` + 环境变量 | `wolfpack.config.json`（可选）+ 环境变量 |
-| 读 `wolfpack.config.json`？ | **不读** | 读 |
-| Config 里的可变键 | `enabled` / `agy_enabled` / `claude_enabled`（都标 `.volatile()`） | 无这一层 |
+| 读 `wolfpack.config.json`？ | runConfig 调用 loadConfig 取得工人路径和 health；不整体继承 CLI 配置 | 读 |
+| Config 里的可变键 | enabled / agy_enabled / claude_enabled / workers_enabled（volatile） | 无这一层 |
 | 生效应变 | 三个开关**不重启**即生效（`loader/volatile-update` 就地刷新） | 环境变量 / 配置文件，进程启动时读 |
 
 两条容易踩的坑：
 
-- DSH 半边**不读** `wolfpack.config.json`，但**读** `WOLFPACK_WORKER` / `WOLFPACK_AGY` /
+- DSH 的 runConfig 读取 loadConfig 返回的目录工人路径与健康配置；候选集合由 Cordis workers_enabled 决定，不使用 CLI 的 WOLFPACK_WORKERS_ENABLED / JSON workers_enabled；另外**读** `WOLFPACK_WORKER` / `WOLFPACK_AGY` /
   `WOLFPACK_CLAUDE` / `WOLFPACK_WORKER_HEALTH` 等环境变量（插件启动时折进 `runConfig()`；
   `WOLFPACK_WORKER` 在 volatile 更新时也会重读）。
 - `WOLFPACK_RAW_DIR` / `WOLFPACK_SHELL` / `WOLFPACK_CONCURRENCY` / `WOLFPACK_LEDGER_MAX_*`
@@ -809,12 +817,16 @@ node tests/run.mjs      # 末行「全部通过」，退出码 0；完全不调�
 |---|---|---|
 | `wolfpack.test.mjs` | **177** | 纯函数、假进程 seam、验收、四工具、digest 版式、provider、台账、闸门、停滞、kill、留存、对账、预算、小队、统一核与运行时 |
 | `config-volatile.test.mjs` | **11** | `inject` 白名单、volatile 开关挂载/摘除、缺服务降级、软获取机械闸门 |
-| `tool-schema.test.mjs` | **7** | 用 harness **自己的**校验器验四个工具的返回对象（`additionalProperties: false`） |
-| `client.test.mjs` | **42** | 注册契约、渲染树、外观/交互契约、轮询生命周期、防回归机械闸门、工人多选三态与写入被拒的可见反馈 |
+| `tool-schema.test.mjs` | **10** | 用 harness **自己的**校验器验四个工具的返回对象（`additionalProperties: false`） |
+| `client.test.mjs` | **47** | 注册契约、渲染树、外观/交互契约、轮询生命周期、防回归机械闸门、工人多选三态与写入被拒的可见反馈 |
 | `worker-health.test.mjs` | **6** | 故障分类（capacity/auth/timeout/no-output/error）、冷却演化、取消不清零之外的边界、挑选分支 |
 | `claude-worker.test.mjs` | **17** | claude 适配器：argv、权限模式映射、会话 id 提取、结果解析、容量判定（全部用假 claude 脚本） |
-| `worker-selection.test.mjs` | **10** | 工人启用集合 → 候选池收窄 → 挑选结果与 `reason` 文案；键缺省时必须按 schema 默认兜底 |
-| **合计** | **270** | |
+| `worker-selection.test.mjs` | **10** | 工人启用集合、候选池与选择原因 |
+| `worker-pin-regression.test.mjs` | **3** | 启用集合传递、禁用工人不越界与选择回归 |
+| `worker-roster.test.mjs` | **6** | 离线目录、路径检测与宿主快照 |
+| `worker-registry.test.mjs` | **10** | 注册目录、声明式适配与未知契约拒绝 |
+| `claude-cmd-fallback.test.mjs` | **9** | Windows npm 启动器、带空格路径与回退 |
+| **合计** | **306** | |
 
 测试**完全不调用真实工人**（用内置假进程 / 假 claude 脚本承载），
 因此不需要装 `agy` 或 `claude`、不消耗任何配额。
@@ -843,7 +855,7 @@ node tests/run.mjs      # 末行「全部通过」，退出码 0；完全不调�
 | 某个工人被「跳过」了 | 它刚失败到阈值、进了冷却。digest 会写清冷却原因与剩余时间，到点自动恢复——这是设计，不用反复重试 |
 | 工人复选框点了没反应 / 两个都显示「已启用」 | 2.0.0 的前端把**缺失的键**当成「已启用」，写入被拒时也只 `console.warn`。2.1.0 起：缺键按 schema 默认显示（agy 开、claude 关），写入被拒会重读快照重试一次并在复选框旁写明原因。**若仍无反应，是宿主进程还跑着升级前的模块**——宿主模块只在进程启动时 import 一次，改动插件源码后必须**完全退出并重开 DSH**（客户端模块每次刷新页面都会重读） |
 | 派活后立刻返回 `stale` | **不是错误**：基线命令已经通过，说明问题已被修或不存在，本轮**没有启动工人**（省钱设计）。别重派，直接收尾 |
-| 磁盘改动显示「无法判定」 | 工作目录不是 git 仓库，探测不到增量。**这不等于「没有改动」**，以 `verify` 的退出码为准 |
+| 磁盘改动显示「无法判定」 | 非 Git 会使用有界快照；达到扫描边界或采样失败时可能无法可靠判定增量。**这不等于「没有改动」**，以 `verify` 的退出码为准 |
 | 同一个 `task_id` 第二次调用被拒 | 上一次还在跑（闸门在运行结束即释放）。等它结束，或换 `task_id` |
 | 右侧实时面板空白 | 看 `<台账目录>/live-route.log`：多半是 `webServer` / `connection` 服务未就位，路由没挂上（面板空 = 路由没挂，不是没数据） |
 | `agy 报服务端容量不足` | 与账户额度无关，**不要反复重试**；digest 会明确写这句 |
@@ -862,7 +874,7 @@ node tests/run.mjs      # 末行「全部通过」，退出码 0；完全不调�
 1. **跨进程并发不是原子锁**：靠 `<raw_dir>/live/<taskId>.json` 登记 + PID 探活，
    存在「读登记 → 写登记」的竞态窗口；并发闸门只防**同进程**并发
    （源码里明确标注）。跨进程并发写台账也**没有文件锁**，只有进程内 Promise 串行链。
-2. **工人适配器目前有 `agy` 与 `claude` 两个**。契约已抽好（`lib/core/worker/`），
+2. **两个原生适配器加 26 个声明式目录项**，不等于 28 个已验证真实 CLI。契约已抽好（`lib/core/worker/`），
    换别的 CLI 只需新增一个适配器文件（6 个导出）并注册进 registry。
    `claude` 适配器有 17 个用例覆盖，但那些用例跑的是**假 claude 脚本**——
    真实 Claude Code 的行为差异仍属未验证区域。
@@ -870,14 +882,13 @@ node tests/run.mjs      # 末行「全部通过」，退出码 0；完全不调�
 4. **MCP 只实现 Tools**，未声明 Resources / Prompts；未知方法/工具一律 `-32601`。
 5. 工人的**思考正文未提取为明文流**，只统计 `thinking_tokens`
    （DSH 实时面板能读 transcript，但那是面板专用读取，不进 digest、不进上下文）。
-6. **无 stream-json 事件分发**：`--output-format json` 输出单个 JSON 对象，
-   全仓没有「事件类型」这一层。
+6. **没有实时 JSONL 事件分发**：原生 JSON 和 generic JSONL 均在收集后解析，不能把支持 JSONL 解析当成实时事件流面板。
 7. `lib/core/live.mjs` 的写入侧在当前检出**未接线**（`writeLiveRecord` 无调用点），
    跨进程 kill 因此只对已存在登记文件的运行生效；`listLiveRecords` 的注释说会清理孤儿，
    实现只读不清。
 8. 小工具细节：`tools/ledger-status.ps1` 的帮助注释列了 6 个字段，实际输出只有 4 列；
    CLI `delegate` 在 `unverified` 时退出码 1，而 `team` 在 `unverified` 时退出码 0。
-9. **DSH 半边不吃 `wolfpack.config.json`**（只有 CLI / MCP 读），见 5.2。
+9. **DSH 只取 loadConfig 的工人路径与 health，不整体继承 CLI 配置**；候选集合以 Cordis 配置为准，见 5.2。
 10. **按工人分轨的停滞监控尚未移植**：当前 `stall-monitor` 的采样根是 agy 的那一套
     （`<HOME>/.gemini/antigravity-cli`），claude 的 transcript 目录
     （`~/.claude/projects/<项目目录>/<sessionId>.jsonl`）还没接进来。
@@ -889,10 +900,7 @@ node tests/run.mjs      # 末行「全部通过」，退出码 0；完全不调�
 12. **面板类能力是 DSH 版独有的实现方式**：同族的 `universal/` 与 `codex/` 把实时面板
     做成 `wolf_live` / `wolf_panel` 两个工具（因此那边是 **6 个工具**），
     DSH 版走宿主侧 HTTP 路由 `/wolfpack/live` + 右侧面板标签页，**因此这里是 4 个工具**。
-13. **`lib/core/config.mjs` 的 Windows claude 默认值仍是 `claude.exe`**，
-    而 npm 全局安装的 Claude Code 实际是 `claude.cmd` / `claude.ps1`；
-    CLI / MCP 侧不显式给 `WOLFPACK_CLAUDE` 时可能找不到 claude。
-    DSH 插件侧走的是裸命令名 `claude`（靠 `PATHEXT` 解析），不受影响。
+13. **Windows Claude 默认 .exe 现可回退 npm .cmd/.bat**，但路径存在不代表登录与配额有效。扩展工人的 CLI 参数和输出格式依赖其版本，目录研究不能替代真实集成测试。
 14. **宿主侧模块不会热重载**：DSH 加载器只在进程启动时 import 一次插件模块
     （`lib/index.js` 等），改动源码后即使插件目录里的文件已经变了，
     正在运行的宿主仍跑旧代码——必须**完全退出并重开 DSH**。

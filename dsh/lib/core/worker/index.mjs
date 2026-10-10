@@ -1,28 +1,23 @@
-import { existsSync } from 'node:fs'
-import { delimiter, isAbsolute, join } from 'node:path'
+import { isAbsolute } from 'node:path'
 
 import { agyWorker } from './agy.mjs'
 import { claudeWorker } from './claude.mjs'
 import { snapshotHealth } from './health.mjs'
+import { WORKER_SPECS, CORE_WORKER_NAMES } from './specs.mjs'
+import { createWorkerFromSpec } from './generic.mjs'
+import { findInPath } from './resolve.mjs'
 
-export function findInPath(cmd, env = process.env) {
-  if (!cmd || typeof cmd !== 'string') return undefined
-  const pathEnv = env.PATH || env.Path || process.env.PATH || process.env.Path || ''
-  const extensions = process.platform === 'win32'
-    ? (env.PATHEXT ? env.PATHEXT.split(';') : ['.exe', '.cmd', '.bat', ''])
-    : ['']
+export { CORE_WORKER_NAMES, findInPath }
 
-  const dirs = pathEnv.split(delimiter)
-  for (const dir of dirs) {
-    if (!dir) continue
-    for (const ext of extensions) {
-      const candidate = join(dir, cmd.toLowerCase().endsWith(ext.toLowerCase()) && ext !== '' ? cmd : `${cmd}${ext}`)
-      try {
-        if (existsSync(candidate)) return candidate
-      } catch {}
-    }
-  }
-  return undefined
+/**
+ * 判断指定工人是否为 opt-in 工人。
+ *
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function isOptInWorker(name) {
+  if (!name || typeof name !== 'string') return false
+  return !CORE_WORKER_NAMES.includes(name.trim().toLowerCase())
 }
 
 /** 「全自动」标记：不指定具体工人时，装了谁就用谁；两个都装则轮流派活 */
@@ -30,9 +25,6 @@ export const AUTO_WORKER = 'auto'
 
 /** 与 auto 等价的写法 */
 const AUTO_ALIASES = new Set(['auto', 'rotate', 'rotation', 'both', 'any'])
-
-/** 各工人可执行文件所在的配置键 */
-const WORKER_PATH_KEYS = { agy: 'agyPath', claude: 'claudePath' }
 
 /**
  * 进程内轮换游标。
@@ -43,7 +35,11 @@ let rotationCursor = 0
 const registry = new Map([
   [agyWorker.name, agyWorker],
   [claudeWorker.name, claudeWorker],
+  ...WORKER_SPECS.map(spec => [spec.name, createWorkerFromSpec(spec)]),
 ])
+
+/** 各工人可执行文件所在的配置键 */
+export const WORKER_PATH_KEYS = Object.fromEntries([...registry.keys()].map(n => [n, n + 'Path']))
 
 /**
  * 注册工人适配器。
@@ -124,10 +120,11 @@ export function isWorkerAvailable(name, config, { env = process.env, find = find
   const worker = registry.get(name)
   if (!worker || typeof worker.preflight !== 'function') return false
 
-  const probe = worker.preflight(config)
+  const probe = worker.preflight(config, { env, find })
   if (probe?.ok !== true) return false
 
-  const raw = workerPathOf(name, config)
+  const defaultBin = worker.spec?.bin || (name === 'agy' ? (process.platform === 'win32' ? 'agy.exe' : 'agy') : (name === 'claude' ? (process.platform === 'win32' ? 'claude.exe' : 'claude') : name))
+  const raw = workerPathOf(name, config) || defaultBin
   if (Array.isArray(raw)) return true
   if (typeof raw !== 'string' || raw.trim() === '') return false
 
@@ -136,7 +133,16 @@ export function isWorkerAvailable(name, config, { env = process.env, find = find
   if (isAbsolute(target) || target.includes('/') || target.includes('\\')) return true
 
   const hit = find(target, env)
-  return typeof hit === 'string' && hit !== ''
+  if (typeof hit === 'string' && hit !== '') return true
+
+  if (target === worker.spec?.bin && Array.isArray(worker.spec?.binAliases)) {
+    for (const alias of worker.spec.binAliases) {
+      const aliasHit = find(alias, env)
+      if (typeof aliasHit === 'string' && aliasHit !== '') return true
+    }
+  }
+
+  return false
 }
 
 /**
@@ -160,7 +166,24 @@ export function isWorkerAvailable(name, config, { env = process.env, find = find
  */
 export function resolveWorkerSelection({ config, previousWorker, env = process.env, find = findInPath, health, now = Date.now() } = {}) {
   const known = [...registry.keys()]
-  const rawEnabled = config?.workersEnabled
+  let rawEnabled = config?.workersEnabled
+  if (rawEnabled === undefined && config && (config.agy_enabled !== undefined || config.claude_enabled !== undefined)) {
+    const agyRaw = config.agy_enabled
+    const claudeRaw = config.claude_enabled
+    const agyVal = agyRaw !== null && typeof agyRaw === 'object' && typeof agyRaw.get === 'function' ? agyRaw.get() : agyRaw
+    const claudeVal = claudeRaw !== null && typeof claudeRaw === 'object' && typeof claudeRaw.get === 'function' ? claudeRaw.get() : claudeRaw
+    const agyOn = agyVal !== undefined ? (agyVal !== false && String(agyVal).trim().toLowerCase() !== 'false') : true
+    const claudeOn = claudeVal !== undefined ? (claudeVal === true || String(claudeVal).trim().toLowerCase() === 'true') : false
+    if (agyOn && claudeOn) {
+      rawEnabled = undefined
+    } else if (agyOn) {
+      rawEnabled = ['agy']
+    } else if (claudeOn) {
+      rawEnabled = ['claude']
+    } else {
+      rawEnabled = []
+    }
+  }
   const hasEnabledFilter = Array.isArray(rawEnabled) && rawEnabled.length > 0
   const enabledNames = hasEnabledFilter
     ? rawEnabled.map(w => (typeof w === 'string' ? w.trim().toLowerCase() : String(w))).filter(Boolean)
@@ -170,7 +193,7 @@ export function resolveWorkerSelection({ config, previousWorker, env = process.e
   const allWorkers = listWorkers()
   const candidates = enabledSet !== null
     ? allWorkers.filter(w => enabledSet.has(w.name))
-    : allWorkers
+    : allWorkers.filter(w => CORE_WORKER_NAMES.includes(w.name))
   const eligible = candidates.filter(w => isWorkerAvailable(w.name, config, { env, find }))
 
   if (eligible.length === 0) {
@@ -192,7 +215,8 @@ export function resolveWorkerSelection({ config, previousWorker, env = process.e
     throw new Error(
       `[wolfpack/worker] 没有可用的工人 CLI（已注册：${known.join(', ')}）。`
       + '请至少安装并登录一个工人：Antigravity CLI（agy）或 Claude Code CLI（claude）；'
-      + '也可用 WOLFPACK_AGY / WOLFPACK_CLAUDE 指定可执行文件路径。',
+      + '也可用 WOLFPACK_AGY / WOLFPACK_CLAUDE 指定可执行文件路径。'
+      + '使用 "wolf workers" 查看全部已注册工人状态，或参考 docs/WORKERS.md。',
     )
   }
 

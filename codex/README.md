@@ -1,5 +1,7 @@
 # Wolfpack for Codex
 
+[English](README.en.md) | 简体中文 · [运行架构与执行逻辑](docs/ARCHITECTURE.md)
+
 连接 Codex 与工人 CLI（Antigravity CLI 的 `agy`、Claude Code CLI 的 `claude`）的本地任务委派工具。
 
 Wolfpack 把「派活、执行、验收、记账」串成一条流水线：Codex 负责拆任务、定验收标准、审查结果，工人 CLI 负责真正动手改代码、跑命令，Wolfpack 负责留下过程痕迹并汇总可核实的证据。你可以通过 MCP 工具调用，也可以直接使用命令行。

@@ -1,8 +1,10 @@
 # Wolfpack 配置参考
 
+[English](CONFIGURATION.en.md) | 简体中文
+
 ## 配置
 
-可参考 [wolfpack.config.example.json](wolfpack.config.example.json) 创建本地 `wolfpack.config.json`。默认从当前工作目录向上查找配置文件；`WOLFPACK_CONFIG_FILE` 可指定要读取的文件。
+可参考 [wolfpack.config.example.json](../wolfpack.config.example.json) 创建本地 `wolfpack.config.json`。默认从当前工作目录向上查找配置文件；`WOLFPACK_CONFIG_FILE` 可指定要读取的文件。
 
 常用配置优先使用对应环境变量，再使用 JSON 配置值，最后采用默认值。
 

@@ -21,7 +21,12 @@ const CAPACITY_TEXT = /(no capacity available|overloaded|rate ?limit|too many re
 const CAPACITY_TEXT_NARROW = /(no capacity available|insufficient[_ ]?(user[_ ])?quota|exceeded your current quota|no available channel|无可用渠道|暂无可用渠道|额度不足|配额不足|余额不足)/i
 
 /** 鉴权/未登录类文案：这类不算「任务失败」，而是工人当前不可用。 */
-const AUTH_TEXT = /(unauthorized|invalid[_ -]?api[_ -]?key|authentication[_ ]error|invalid bearer|not logged in|please (log|sign) in|please run .{0,24}login|登录已过期|未登录|请先登录|凭证(无效|过期)|密钥无效)/i
+const AUTH_TEXT = /(unauthorized|invalid[_ -]?api[_ -]?key|authentication[_ ]error|failed to authenticate|invalid bearer|not logged in|please (log|sign) in|please run .{0,24}login|登录已过期|未登录|请先登录|凭证(无效|过期)|密钥无效|api error:?\s*40[13]\b|无权访问(?:模型)?|\b40[13]\b.{0,40}(?:auth|token|key|permission|forbidden|unauthorized|令牌|鉴权|权限|无权)|(?:auth|token|key|permission|forbidden|unauthorized|令牌|鉴权|权限|无权).{0,40}\b40[13]\b)/i
+
+/**
+ * 窄模式：允许在整段 raw stdout 上匹配（工人正文里出现这些整串的可能性极低）。
+ */
+const AUTH_TEXT_NARROW = /(failed to authenticate|api error:?\s*40[13]\b|无权访问(?:模型)?|invalid[_ -]?api[_ -]?key|authentication[_ ]error|invalid bearer|not logged in|please (log|sign) in|please run .{0,24}login|登录已过期|未登录|请先登录|凭证(无效|过期)|密钥无效|\b40[13]\b.{0,40}(?:该令牌|token|api[_ -]?key|bearer|鉴权|无权)|(?:该令牌|token|api[_ -]?key|bearer|鉴权|无权).{0,40}\b40[13]\b)/i
 
 /**
  * 判定是否为容量/额度类故障。
@@ -45,14 +50,18 @@ export function matchCapacity({ status, texts = [], raw } = {}) {
  * 判定是否为鉴权/未登录类故障。
  *
  * @param {object} [params]
- * @param {Array<string|number>} [params.texts]
+ * @param {number} [params.status] - 结构化 API 状态码
+ * @param {Array<string|number>} [params.texts] - 结构化错误字段与 stderr
+ * @param {string} [params.raw] - 整段 stdout（只匹配窄模式）
  * @returns {boolean}
  */
-export function matchAuth({ texts = [] } = {}) {
+export function matchAuth({ status, texts = [], raw } = {}) {
+  if (typeof status === 'number' && (status === 401 || status === 403)) return true
   for (const text of texts) {
     if (typeof text === 'number' && (text === 401 || text === 403)) return true
     if (typeof text === 'string' && text !== '' && AUTH_TEXT.test(text)) return true
   }
+  if (typeof raw === 'string' && raw !== '' && AUTH_TEXT_NARROW.test(raw)) return true
   return false
 }
 
@@ -99,8 +108,8 @@ export function classifyFaultKind({
   if (stopReason === 'completed' || stopReason === 'skipped') return undefined
   if (stopReason === 'capacity') return 'capacity'
   if (matchCapacity({ status, texts, raw })) return 'capacity'
-  // 状态码也要参与鉴权判定（401/403）：中转与 CLI 有时只给码不给文案
-  if (matchAuth({ texts: [status, ...texts] })) return 'auth'
+  // 状态码也要参与鉴权判定（401/403）：中转与 CLI 有时只给码不给文案；raw 窄模式匹配
+  if (matchAuth({ status, texts: [status, ...texts], raw })) return 'auth'
   if (outputEmpty === true) return 'no-output'
   if (stopReason === 'error' || stopReason === 'aborted') return 'error'
   return undefined

@@ -225,22 +225,31 @@ export function snapshotHealth(state, worker, now = Date.now()) {
       total_failures: 0,
     }
   }
-  const until = typeof entry.benchedUntil === 'number' ? entry.benchedUntil : 0
+  const until = typeof entry.benchedUntil === 'number' && Number.isFinite(entry.benchedUntil)
+    ? entry.benchedUntil
+    : 0
   const benched = until > now
-  return {
+  const snap = {
     worker,
     benched,
-    benched_until: benched ? until : undefined,
-    remaining_ms: benched ? until - now : undefined,
-    consecutive_failures: entry.consecutiveFailures ?? 0,
-    total_failures: entry.totalFailures ?? 0,
-    last_reason: entry.lastReason,
-    last_stop_reason: entry.lastStopReason,
-    last_diagnostic: entry.lastDiagnostic,
-    last_outcome: entry.lastOutcome,
-    last_failure_at: entry.lastFailureAt,
-    last_success_at: entry.lastSuccessAt,
+    consecutive_failures: typeof entry.consecutiveFailures === 'number' && Number.isFinite(entry.consecutiveFailures)
+      ? entry.consecutiveFailures
+      : 0,
+    total_failures: typeof entry.totalFailures === 'number' && Number.isFinite(entry.totalFailures)
+      ? entry.totalFailures
+      : 0,
   }
+  if (benched) {
+    snap.benched_until = until
+    snap.remaining_ms = Math.max(0, until - now)
+  }
+  if (entry.lastReason !== undefined && entry.lastReason !== null) snap.last_reason = entry.lastReason
+  if (entry.lastStopReason !== undefined && entry.lastStopReason !== null) snap.last_stop_reason = entry.lastStopReason
+  if (entry.lastDiagnostic !== undefined && entry.lastDiagnostic !== null) snap.last_diagnostic = entry.lastDiagnostic
+  if (entry.lastOutcome !== undefined && entry.lastOutcome !== null) snap.last_outcome = entry.lastOutcome
+  if (entry.lastFailureAt !== undefined && entry.lastFailureAt !== null) snap.last_failure_at = entry.lastFailureAt
+  if (entry.lastSuccessAt !== undefined && entry.lastSuccessAt !== null) snap.last_success_at = entry.lastSuccessAt
+  return snap
 }
 
 /** 故障类别的中文说明（digest / status / 面板共用）。 */

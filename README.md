@@ -1,5 +1,9 @@
 # Wolfpack · 狼群模式
 
+[English](README.en.md) | 简体中文
+
+[![Tests](https://github.com/Cofran-77/wolfpack/actions/workflows/test.yml/badge.svg)](https://github.com/Cofran-77/wolfpack/actions/workflows/test.yml) · [MIT](LICENSE) · [本次升级](docs/releases/2026-10-10-dsh-worker-registry.md) · [曝光与社区计划](docs/GROWTH.md)
+
 **把 AI 的判断、工人的执行和代码的验收接成一条流水线。**
 
 Wolfpack 是一个本地 AI 任务委派工具集。队长理解目标、拆分任务、规定边界并审查结果；外部 CLI 工人在独立会话中读文件、改代码和运行命令；Wolfpack 负责启动工人、延续会话、执行验收、记录台账并返回有界摘要。
@@ -24,7 +28,7 @@ Wolfpack 将自洽、可独立验收的执行工作派给外部 CLI，让队长�
 | 展示名称 | Wolfpack for DSH | Wolfpack for Codex | Wolfpack |
 | 推荐用途 | DSH 原生插件体验，首推 | Codex 队长拆任务与独立验收 | 兼容本地 stdio MCP 的客户端、CLI、脚本 |
 | 主要入口 | Cordis 插件，另带 CLI/MCP | MCP 与 CLI，配套 AGENTS.md | MCP、CLI 与程序化核心导出 |
-| 工人 | Antigravity agy / Claude Code claude | 同左 | 同左 |
+| 工人 | agy / Claude 原生适配；目录另收录 26 个需主动启用的声明式工人 | Antigravity agy / Claude Code claude | Antigravity agy / Claude Code claude |
 | 工人选择 | 原生复选框收窄候选集合，支持自动挑选与轮换 | 环境变量/配置文件设置偏好与路径 | 环境变量/配置文件设置偏好与路径 |
 | 图形开关 | 输入框按钮与设置页同步，开关即时生效 | 无 DSH 原生按钮 | 无 DSH 原生按钮 |
 | 对话工具 | 4 个：delegate / status / kill / team | 6 个，另含 live / panel | 6 个，另含 live / panel |
@@ -62,7 +66,7 @@ verify_baseline 是派活前必须失败的检查。基线已通过时返回 sta
 
 ### 自动选择、会话续跑与健康冷却
 
-候选工人由安装状态、配置、DSH 启用集合（仅 DSH 版）及健康状态决定。同一任务复用 task_id 可以沿用原工人会话；换工人会冷启动，避免混用不同 CLI 的会话 ID。
+候选工人由安装状态、配置、DSH 启用集合（仅 DSH 版）及健康状态决定。DSH 的 28 项目录包含 2 个原生适配和 26 个主动启用的声明，不代表 28 个真实 CLI 均已端到端测试。iflow、codebuff 的无头契约尚不确定，预检拒绝启动。同一任务复用 task_id 可以沿用原工人会话；换工人会冷启动，避免混用不同 CLI 的会话 ID。
 
 容量、额度、鉴权或超时等故障进入健康台账，后续任务可改派另一工人。常见默认冷却为容量类 5 分钟、超时/普通失败 10 分钟、鉴权类 30 分钟。自动恢复、显式偏好和所有工人都冷却时的处理以各版手册为准。
 
@@ -91,13 +95,25 @@ wolf_team 接收 1–8 个独立任务，并发上限为 4。同批重复任务 
 DSH 版接入宿主的插件装载、配置、提示注入、子进程与前端扩展体系：
 
 - **按钮开关**：输入框狼群按钮与“设置 → 通用”同步 enabled 状态，开关无需重启，关闭时摘除工具。
-- **工人复选框**：启用 agy、Claude 或二者，显示已启用/未启用/未安装；UI 防止取消最后一个工人。当前默认 agy 开、Claude 关，要双工人轮换请勾选 Claude。
+- **工人复选框**：按动态工人目录选择候选集合，显示已启用/未启用/未安装；UI 防止取消最后一个工人。当前默认 agy 开、Claude 关，要双工人轮换请勾选 Claude。
 - **队长提示**：briefing.md 随插件启用接入 systemPrompt，减少手动粘贴操作约定。
 - **原生工具卡片**：status 用任务行与徽标展示台账，kill 显示取消结果与原因。
 - **右侧实时面板**：显示运行数量、轮次、步骤、耗时、token 与可读 transcript。运行时积极刷新、空闲时放缓、隐藏页面暂停轮询。
 - **宿主子进程管理**：使用 ctx.subprocess，透传宿主输出落盘、取消信号和生命周期语义。
 
 这些交互是 DSH 版的主要价值。Claude 分轨监控、跨进程登记等仍有实现边界，详见 [DSH 完整手册](dsh/README.md)。不要直接将另两版能力套在 DSH 上。
+
+## 本次 DSH 升级与运行架构
+
+新增声明式工人目录、动态 workers_roster、离线 workers 列表、启用集合传递修复、无损 JSON 输出边界与 Windows Claude npm 启动器回退。包内版本仍是 2.1.0，本次按源码快照说明，未虚构新版本号。详细变化与测试范围见 [升级说明](docs/releases/2026-10-10-dsh-worker-registry.md)。
+
+各版架构文档分别解释入口、核心、运行时、工人适配、状态存储，以及从任务书到基线、执行、验收、摘要的完整逻辑，并注明取消、并发、恢复和观测边界：
+
+| 版本 | 中文架构与逻辑 | English architecture |
+| --- | --- | --- |
+| DSH | [运行架构](dsh/docs/ARCHITECTURE.md) | [Architecture](dsh/docs/ARCHITECTURE.en.md) |
+| Codex | [运行架构](codex/docs/ARCHITECTURE.md) | [Architecture](codex/docs/ARCHITECTURE.en.md) |
+| 通用版 | [运行架构](universal/docs/ARCHITECTURE.md) | [Architecture](universal/docs/ARCHITECTURE.en.md) |
 
 ## 安装与第一次使用
 

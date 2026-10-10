@@ -71,8 +71,9 @@ window.__ModuleLoader__.load({
       '.wp-dropdown-btn:hover{opacity:1;background:rgba(127,127,127,.18);}',
       '.wp-dropdown-btn[disabled]{opacity:.25;cursor:default;}',
       '.wp-popover-backdrop{position:fixed;top:0;left:0;right:0;bottom:0;z-index:9998;background:transparent;}',
-      '.wp-popover{position:absolute;bottom:calc(100% + 6px);right:0;z-index:9999;min-width:210px;padding:10px 12px;border-radius:8px;background:#1e222b;border:1px solid rgba(127,127,127,.25);box-shadow:0 8px 24px rgba(0,0,0,.4);display:flex;flex-direction:column;gap:8px;font-size:12px;color:inherit;}',
+      '.wp-popover{position:absolute;bottom:calc(100% + 6px);right:0;z-index:9999;min-width:210px;max-height:360px;overflow-y:auto;padding:10px 12px;border-radius:8px;background:#1e222b;border:1px solid rgba(127,127,127,.25);box-shadow:0 8px 24px rgba(0,0,0,.4);display:flex;flex-direction:column;gap:8px;font-size:12px;color:inherit;}',
       '.wp-popover-title{font-size:11px;font-weight:600;opacity:.65;margin-bottom:2px;}',
+      '.wp-worker-badge{font-size:10px;padding:1px 4px;border-radius:3px;background:rgba(47,158,99,.2);color:#2f9e63;margin-left:4px;}',
       '.wp-worker-item{display:flex;flex-direction:column;gap:2px;cursor:pointer;user-select:none;padding:4px 6px;border-radius:4px;transition:background .15s ease;}',
       '.wp-worker-item:hover{background:rgba(127,127,127,.12);}',
       '.wp-worker-row{display:flex;align-items:center;gap:6px;}',
@@ -238,14 +239,44 @@ window.__ModuleLoader__.load({
         var value = valueOf(snap)
         var on = value !== null && typeof value === 'object' && value.enabled === true
 
-        // 缺省值必须与插件 Config 的 schema 默认值一致（lib/index.js:105-111）：
-        // agy 默认开，claude 默认关。否则 UI 会把「默认关掉的 claude」显示成已启用。
-        var agyEnabled = value !== null && typeof value === 'object' && value.agy_enabled !== undefined
-          ? value.agy_enabled === true
-          : true
-        var claudeEnabled = value !== null && typeof value === 'object' && value.claude_enabled !== undefined
-          ? value.claude_enabled === true
-          : false
+        var parseWorkersRoster = function (raw) {
+          if (typeof raw !== 'string' || raw.trim() === '') return null
+          try {
+            var parsed = JSON.parse(raw)
+            if (parsed && Array.isArray(parsed.workers)) {
+              return parsed.workers
+            }
+            if (Array.isArray(parsed)) {
+              return parsed
+            }
+            return null
+          } catch (_) {
+            return null
+          }
+        }
+
+        var getEnabledWorkers = function (val) {
+          var raw = val !== null && typeof val === 'object' ? val.workers_enabled : undefined
+          if (typeof raw === 'string' && raw.trim() !== '') {
+            return raw.split(',').map(function (s) { return s.trim().toLowerCase() }).filter(Boolean)
+          }
+          var enabled = []
+          var agyOn = val !== null && typeof val === 'object' && val.agy_enabled !== undefined
+            ? val.agy_enabled === true
+            : true
+          var claudeOn = val !== null && typeof val === 'object' && val.claude_enabled !== undefined
+            ? val.claude_enabled === true
+            : false
+          if (agyOn) enabled.push('agy')
+          if (claudeOn) enabled.push('claude')
+          return enabled
+        }
+
+        var roster = parseWorkersRoster(value !== null && typeof value === 'object' ? value.workers_roster : undefined)
+        var enabledWorkers = getEnabledWorkers(value)
+
+        var agyEnabled = enabledWorkers.includes('agy')
+        var claudeEnabled = enabledWorkers.includes('claude')
 
         var agyInstalled = !(value !== null && typeof value === 'object' && value.agy_installed === false)
         var claudeInstalled = !(value !== null && typeof value === 'object' && value.claude_installed === false)
@@ -326,6 +357,51 @@ window.__ModuleLoader__.load({
           })
         }
 
+        /**
+         * 通过 workers_enabled 勾选/取消勾选任意工人（来自登记表）。
+         */
+        var toggleWorker = function (name, report) {
+          if (locked) {
+            if (typeof report === 'function') report(lockReason)
+            return Promise.resolve(false)
+          }
+          var isCurrentlyOn = enabledWorkers.includes(name)
+          var nextEnabled
+          if (isCurrentlyOn) {
+            nextEnabled = enabledWorkers.filter(function (n) { return n !== name })
+            if (nextEnabled.length === 0) {
+              if (typeof report === 'function') report('至少要启用一个工人。')
+              return Promise.resolve(false)
+            }
+          } else {
+            nextEnabled = enabledWorkers.concat([name])
+          }
+
+          var ordered = []
+          if (roster && Array.isArray(roster)) {
+            for (var i = 0; i < roster.length; i++) {
+              if (nextEnabled.includes(roster[i].name)) {
+                ordered.push(roster[i].name)
+              }
+            }
+          }
+          for (var j = 0; j < nextEnabled.length; j++) {
+            if (!ordered.includes(nextEnabled[j])) {
+              ordered.push(nextEnabled[j])
+            }
+          }
+          var nextCsv = ordered.join(',')
+
+          return writeConfig('workers_enabled', nextCsv).then(function (accepted) {
+            if (accepted) return true
+            console.warn('wolfpack: 设置未被接受（workers_enabled=' + nextCsv + '）')
+            if (typeof report === 'function') {
+              report('宿主拒绝了这次写入（workers_enabled），设置可能没保存——完全退出 DSH 再打开试试。')
+            }
+            return false
+          })
+        }
+
         return {
           snap: snap,
           ready: ready,
@@ -336,9 +412,13 @@ window.__ModuleLoader__.load({
           claudeEnabled: claudeEnabled,
           agyInstalled: agyInstalled,
           claudeInstalled: claudeInstalled,
+          roster: roster,
+          enabledWorkers: enabledWorkers,
+          toggleWorker: toggleWorker,
           locked: locked,
           lockReason: lockReason,
           setWorker: setWorker,
+          writeConfig: writeConfig,
         }
       }
 
@@ -944,8 +1024,11 @@ window.__ModuleLoader__.load({
             showWorkerTip(wolf.lockReason)
             return
           }
-          // 失败原因（至少留一个 / 宿主拒绝 / 超时）由 setWorker 回传给 showWorkerTip 显示。
-          wolf.setWorker(name, !current, showWorkerTip)
+          if (wolf.roster && wolf.roster.length > 0) {
+            wolf.toggleWorker(name, showWorkerTip)
+          } else {
+            wolf.setWorker(name, !current, showWorkerTip)
+          }
         }
 
         var activeNav = currentNav || navRef
@@ -977,6 +1060,89 @@ window.__ModuleLoader__.load({
         var btnContent = inlineTip ? '不可用' : '\uD83D\uDCCA'
         var agyStatus = workerStatusText(wolf.agyEnabled, wolf.agyInstalled)
         var claudeStatus = workerStatusText(wolf.claudeEnabled, wolf.claudeInstalled)
+
+        var popoverChildren = [
+          React.createElement('div', { key: 'title', className: 'wp-popover-title' }, '启用工人（至少选一个）'),
+          wolf.locked ? React.createElement('div', { key: 'lock', className: 'wp-popover-tip wp-worker-lock' }, wolf.lockReason) : null,
+          workerTip ? React.createElement('div', { key: 'tip', className: 'wp-popover-tip' }, workerTip) : null,
+        ].filter(Boolean)
+
+        if (wolf.roster && wolf.roster.length > 0) {
+          for (var wi = 0; wi < wolf.roster.length; wi++) {
+            (function (w) {
+              var isEnabled = wolf.enabledWorkers.includes(w.name)
+              var installedAttr = w.installed === true ? 'true' : (w.installed === false ? 'false' : 'unknown')
+              var statusText = w.installed === false ? '未安装' : (isEnabled ? '已启用' : '未启用')
+
+              popoverChildren.push(
+                React.createElement('label', {
+                  key: w.name,
+                  className: 'wp-worker-item',
+                  'data-worker': w.name,
+                  'data-enabled': isEnabled ? 'true' : 'false',
+                  'data-installed': installedAttr,
+                },
+                  React.createElement('div', { className: 'wp-worker-row' },
+                    React.createElement('input', {
+                      type: 'checkbox',
+                      className: 'wp-worker-checkbox',
+                      'data-worker-toggle': w.name,
+                      checked: isEnabled,
+                      disabled: wolf.locked,
+                      onChange: function (e) {
+                        if (e && typeof e.stopPropagation === 'function') e.stopPropagation()
+                        handleToggleWorker(w.name, isEnabled)
+                      },
+                    }),
+                    React.createElement('span', { className: 'wp-worker-name' }, w.label || w.name),
+                    w.core ? React.createElement('span', { className: 'wp-worker-badge' }, '核心') : null
+                  ),
+                  React.createElement('span', { className: 'wp-worker-status' }, statusText)
+                )
+              )
+            })(wolf.roster[wi])
+          }
+        } else {
+          popoverChildren.push(
+            React.createElement('label', { key: 'fallback-agy', className: 'wp-worker-item' },
+              React.createElement('div', { className: 'wp-worker-row' },
+                React.createElement('input', {
+                  type: 'checkbox',
+                  className: 'wp-worker-checkbox',
+                  checked: wolf.agyEnabled,
+                  disabled: wolf.locked,
+                  onChange: function () { handleToggleWorker('agy', wolf.agyEnabled) },
+                }),
+                React.createElement('span', { className: 'wp-worker-name' }, 'Antigravity (agy)')
+              ),
+              React.createElement('span', { className: 'wp-worker-status' }, agyStatus)
+            ),
+            React.createElement('label', { key: 'fallback-claude', className: 'wp-worker-item' },
+              React.createElement('div', { className: 'wp-worker-row' },
+                React.createElement('input', {
+                  type: 'checkbox',
+                  className: 'wp-worker-checkbox',
+                  checked: wolf.claudeEnabled,
+                  disabled: wolf.locked,
+                  onChange: function () { handleToggleWorker('claude', wolf.claudeEnabled) },
+                }),
+                React.createElement('span', { className: 'wp-worker-name' }, 'Claude Code (claude)')
+              ),
+              React.createElement('span', { className: 'wp-worker-status' }, claudeStatus)
+            ),
+            React.createElement('div', { key: 'no-roster', className: 'wp-popover-tip' }, '未获取到工人登记表（已退回基础工人选项）')
+          )
+        }
+
+        var popoverEl = React.createElement.apply(React, ['div', {
+          className: 'wp-popover',
+          hidden: !popoverOpen,
+          'aria-hidden': popoverOpen ? 'false' : 'true',
+          style: popoverOpen ? {} : { display: 'none' },
+          onClick: function (e) {
+            if (e && typeof e.stopPropagation === 'function') e.stopPropagation()
+          },
+        }].concat(popoverChildren))
 
         return React.createElement('div', { className: wolf.on ? 'wp-mini on' : 'wp-mini' },
           React.createElement('span', { className: 'wp-mini-label' }, '\uD83D\uDC3A 狼群'),
@@ -1016,42 +1182,7 @@ window.__ModuleLoader__.load({
               setPopoverOpen(false)
             },
           }) : null,
-          popoverOpen ? React.createElement('div', {
-            className: 'wp-popover',
-            onClick: function (e) {
-              if (e && typeof e.stopPropagation === 'function') e.stopPropagation()
-            },
-          },
-            React.createElement('div', { className: 'wp-popover-title' }, '启用工人（至少选一个）'),
-            wolf.locked ? React.createElement('div', { className: 'wp-popover-tip wp-worker-lock' }, wolf.lockReason) : null,
-            React.createElement('label', { className: 'wp-worker-item' },
-              React.createElement('div', { className: 'wp-worker-row' },
-                React.createElement('input', {
-                  type: 'checkbox',
-                  className: 'wp-worker-checkbox',
-                  checked: wolf.agyEnabled,
-                  disabled: wolf.locked,
-                  onChange: function () { handleToggleWorker('agy', wolf.agyEnabled) },
-                }),
-                React.createElement('span', { className: 'wp-worker-name' }, 'Antigravity (agy)')
-              ),
-              React.createElement('span', { className: 'wp-worker-status' }, agyStatus)
-            ),
-            React.createElement('label', { className: 'wp-worker-item' },
-              React.createElement('div', { className: 'wp-worker-row' },
-                React.createElement('input', {
-                  type: 'checkbox',
-                  className: 'wp-worker-checkbox',
-                  checked: wolf.claudeEnabled,
-                  disabled: wolf.locked,
-                  onChange: function () { handleToggleWorker('claude', wolf.claudeEnabled) },
-                }),
-                React.createElement('span', { className: 'wp-worker-name' }, 'Claude Code (claude)')
-              ),
-              React.createElement('span', { className: 'wp-worker-status' }, claudeStatus)
-            ),
-            workerTip ? React.createElement('div', { className: 'wp-popover-tip' }, workerTip) : null
-          ) : null
+          popoverEl
         )
       }
 

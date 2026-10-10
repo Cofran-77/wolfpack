@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
+import { findInPath } from './resolve.mjs'
 
 // 工人输出契约与 agy 完全一致（structured_output.summary / claimed_files，字段名经实测确认），
 // 因此复用同一份解析器，避免两份实现漂移。
@@ -92,9 +93,12 @@ export const claudeWorker = {
     }
     if (isAbsolute(claudePath)) {
       const exists = existsSync(claudePath)
-      return exists
-        ? { ok: true, path: claudePath }
-        : { ok: false, path: claudePath, reason: `claude 可执行文件不存在：${claudePath}` }
+      if (exists) return { ok: true, path: claudePath }
+      if (process.platform === 'win32') {
+        const fallback = findInPath(claudePath, cfg?.env || process.env)
+        if (fallback) return { ok: true, path: fallback }
+      }
+      return { ok: false, path: claudePath, reason: `claude 可执行文件不存在：${claudePath}` }
     }
     return { ok: true, path: claudePath }
   },
@@ -113,11 +117,36 @@ export const claudeWorker = {
    * @returns {string[]}
    */
   buildArgv(cfg, { task, sessionId, timeoutMs } = {}) {
-    const bin = Array.isArray(cfg.claudePath)
-      ? cfg.claudePath
-      : (typeof cfg.claudePath === 'string' && (cfg.claudePath.endsWith('.mjs') || cfg.claudePath.endsWith('.js'))
-          ? [process.execPath, cfg.claudePath]
-          : [cfg.claudePath])
+    const isWin = process.platform === 'win32'
+    let bin
+    if (Array.isArray(cfg?.claudePath)) {
+      bin = cfg.claudePath
+    } else if (typeof cfg?.claudePath === 'string' && (cfg.claudePath.endsWith('.mjs') || cfg.claudePath.endsWith('.js'))) {
+      bin = [process.execPath, cfg.claudePath]
+    } else {
+      const defaultClaudeBin = isWin ? 'claude.exe' : 'claude'
+      const rawTarget = typeof cfg?.claudePath === 'string' && cfg.claudePath.trim() !== ''
+        ? cfg.claudePath.trim()
+        : defaultClaudeBin
+
+      if (isWin) {
+        let resolved = rawTarget
+        if (!isAbsolute(rawTarget) && !rawTarget.includes('/') && !rawTarget.includes('\\')) {
+          const env = cfg?.env || process.env
+          const found = findInPath(rawTarget, env)
+          if (found) resolved = found
+        }
+        const isCmdOrBat = resolved.toLowerCase().endsWith('.cmd') || resolved.toLowerCase().endsWith('.bat')
+        if (isCmdOrBat) {
+          const comSpec = process.env.ComSpec || 'cmd.exe'
+          bin = [comSpec, '/d', '/s', '/c', ...(resolved.includes(' ') ? ['call'] : []), resolved]
+        } else {
+          bin = [resolved]
+        }
+      } else {
+        bin = [rawTarget]
+      }
+    }
 
     const argv = [
       ...bin,
@@ -302,10 +331,13 @@ export const claudeWorker = {
       }
     }
 
+    const rawFallback = typeof raw === 'string' && raw.trim() !== '' ? truncateChars(raw.trim(), DIGEST_MAX_CHARS) : ''
+    const errorDetail = parsed?.error || rawFallback || '无错误详情'
+
     return {
       output: digest,
       stopReason: 'error',
-      diagnostic: `claude ${parsed?.status ?? `exit ${exitCode}`}: ${parsed?.error || '无错误详情'}`,
+      diagnostic: `claude ${parsed?.status ?? `exit ${exitCode}`}: ${errorDetail}`,
       structured: structured?.raw ?? structured,
       claimedFiles,
       reconciliation,

@@ -18,13 +18,17 @@
 
 ### 1.1 真机实测又抓到的三处断裂（首轮只改对了一半）
 
-装好后在真宿主里跑才算数——下面三处是**纸面比对看不出来、只有真机 boot 才会现形**的：
+装好后在真宿主里跑才算数——下面六处是**纸面比对看不出来、只有真机 boot 才会现形**的：
 
 | # | 症状 | 根因 | 修法 |
 | :--- | :--- | :--- | :--- |
 | 1 | 整条 entry 不激活：`dsh: warning: 1 entry did not activate` + `Error: cannot get property "subprocess" without inject`（接着是 `webServer`、`connection`） | 0.2.0 的 cordis **强制注入**：`ctx.某服务` 这种属性访问，只要没写进 `inject` 就直接抛错。插件刻意软获取（缺服务时降级机制半、保住队长指令），却在 `DshRuntime`/`verify`/`live-route` 里用属性访问兜底 | 三处全改 `ctx.get('…')`；新增机械闸门 `X-h`（白名单式扫 `lib/**`，任何非核心属性访问即红） |
 | 2 | 活干成了、台账也写了，但队长只看到 `tool "wolf_delegate" returned invalid output: "value.verify_registered_count" is not a declared property` | 0.2.0 会用 `output.schema`（`additionalProperties: false`）校验工具**返回对象**，校验不过就整份丢弃 → 「我已核实」段永远回不来 | 补 `verify_registered_count` 声明；新增套件 `tool-schema.test.mjs`：用 harness 自己的 `validateJsonSchemaValue` 校验四个工具真实返回的对象 |
 | 3 | `agy 可执行文件不存在：agy.exe`，于是每次派活立刻返回「不可用」——但 `agy` 明明在 PATH 上 | 预检只做 `existsSync('agy.exe')`，那是相对**当前工作目录**的检查，从不查 PATH | `executableCandidates()` 按 PATH/PATHEXT 解析，并把解析出的**绝对路径**回写进配置再 spawn |
+| 4 | 活其实干完了、台账也落了，但控制台报错 `tool wolf_delegate returned invalid output: value is not lossless JSON`，返回值被宿主整份丢弃 | `snapshotHealth()` 在工人有记录时返回含 `undefined` 值的字段，经 `worker_health` 混入返回值；`omitUndefined` 仅清顶层，嵌套 `undefined` 触发宿主 lossless 判据导致整份丢弃 | `snapshotHealth` 剔除所有 undefined 字段；新增通用防线 `toLosslessJson` 递归清洗并接入四个工具返回边界；`tool-schema.test.mjs` 补充有健康条目、失败原因回传及 lossless 校验用例 |
+| 5 | 工人鉴权/权限失效（如 `Failed to authenticate. API Error: 403 该令牌无权访问模型`）被误判成普通 error，`lastDiagnostic` 变成「无错误详情」，且 `benchedUntil: 0` 未被当轮冷却，导致故障工人每轮都被轮换派活 | (1) claude CLI 等鉴权失败时输出裸文本非 JSON，适配器因 `parsed?.error` 为空退回「无错误详情」，丢失 raw 中错误；(2) `faults.mjs` 的 `AUTH_TEXT` 缺少 403/鉴权/无权访问等模式，且 `classifyFaultKind` 未把 raw 传给 `matchAuth` | (1) `claude.mjs` 与 `generic.mjs` 的 error 分支在 `parsed.error` 缺失时回退到 raw 文本（经 `truncateChars` 截断保真）；(2) `faults.mjs` 扩充 `AUTH_TEXT`，并支持 raw 窄模式（`AUTH_TEXT_NARROW`）匹配鉴权故障（保持 capacity 优先）；(3) 验收：`_probe/check-auth-fault.mjs` 6 项全绿，单测补齐鉴权识别、诊断保真、当轮冷却及非鉴权普通失败防误判断言 |
+| 6 | 设置指定 `claude_enabled=false`（回执也打印 `workers=[agy]`），但真实派活却把任务派给 claude 导致鉴权 403 失败；`workers --json` 仍将 claude 报为 enabled | (1) 宿主工具路径：`lib/index.js` 的 `wolf_delegate` / `wolf_team` 传给 `runDelegateTask` 的是原始 `config`，而 `runConfig()` 仅返回新对象未修改原始 `config`，致派活内核收到的 config 无 `workersEnabled` 绕过过滤；(2) CLI 路径：`lib/core/config.mjs` 的 `loadConfig()` 仅认 `WOLFPACK_WORKERS_ENABLED` / `workers_enabled`，未将 `agy_enabled` / `claude_enabled` 翻译为启用集合；(3) 既有测试盲区：单测直接为 `resolveWorkerSelection` 传显式 `workersEnabled`，接线未被覆盖 | (1) `lib/core/config.mjs`: `loadConfig()` 在缺省 `workers_enabled` 时依据 `agy_enabled`/`claude_enabled` 自动折算 `workersEnabled`；(2) `lib/index.js`: `runConfig()` 与 `updateConfig()` 显式将 `workersEnabled` 写入 `config`，且工具调用前确保 `taskConfig` 携带计算好的 `workersEnabled`；(3) `delegate.mjs` / `worker/index.mjs`: 派活内核与挑选策略补充兜底折算；(4) `bin/wolf.mjs`: `workers` 子命令准确处理空集合；(5) 闸门与单测：`_probe/check-worker-pin.ps1` 闸门通过，新增接线回归测试 `worker-pin-regression.test.mjs` |
+| 7 | 用户方案 A：输入框那一排展示全部 28 个工人（含可用状态与启停切换） | 客户端是纯手写浏览器模块、无法探测文件系统且无 import 模块系统；宿主与客户端唯一动态通道是 `configForms.get(NS)` 快照 | (1) 宿主侧新增 `lib/core/worker/roster.mjs`，由 `specs.mjs` 单点构建 28 个工人的元数据，探测纯走 `node:fs` / `node:path` 绝不 spawn；(2) `lib/index.js` 在 `Config` 中新增 `workers_roster` 字段（类型 `z.string().default(...).volatile().hidden()`，默认值为模块加载时计算的 JSON 字符串），快照 `value` 为解析后有效值；(3) `lib/client.js` 解析快照中 `value.workers_roster` 并渲染 28 行（保持常驻元素树），勾选写入 `workers_enabled` CSV，保底拒绝空集合；登记表缺失时平滑回退，外观与既有开关契约保持不变。 |
 
 教训（值得记住）：**插件测试套件的假 ctx 不执行 cordis 的注入校验**，所以 `inject` 类断裂只能在真宿主里显现；
 同理，假 ctx 也不会用 harness 的校验器验返回值。这也是为什么上一轮 219 条用例全绿、真机却挂不上。

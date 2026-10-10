@@ -24,6 +24,7 @@ import {
   normalizeWorkerPreference,
   resolveWorkerSelection,
 } from './core/worker/index.mjs'
+import { WORKER_SPECS } from './core/worker/specs.mjs'
 
 let pass = 0
 let fail = 0
@@ -139,7 +140,9 @@ t('claude-registered', () => {
   assert.equal(getWorker('claude').name, 'claude', '注册表必须能取到 claude 适配器')
   assert.equal(getWorker().name, 'agy', '默认工人必须仍然是 agy')
   const names = listWorkers().map(w => w.name)
-  assert.deepEqual(names.sort(), ['agy', 'claude'])
+  assert.equal(names[0], 'agy', '第一个工人必须是 agy')
+  assert.equal(names[1], 'claude', '第二个工人必须是 claude')
+  assert.deepEqual(names.slice(2), WORKER_SPECS.map(s => s.name), '其余工人按 specs 顺序注册')
   assert.throws(() => getWorker('nope'), /未找到名为 "nope" 的工人适配器/)
 })
 
@@ -272,6 +275,27 @@ t('claude-classify-policies', () => {
   })
   assert.equal(capacity.stopReason, 'capacity')
   assert.equal(capacity.capacity, true)
+
+  const RAW_AUTH = 'Failed to authenticate. API Error: 403 该令牌无权访问模型 claude-opus-5-5'
+  const authFailure = claudeWorker.classify({
+    parsed: undefined,
+    exitCode: 1,
+    artifacts: artifactsNone,
+    raw: RAW_AUTH,
+  })
+  assert.equal(authFailure.stopReason, 'error', '鉴权失败 stopReason 仍为 error')
+  assert.match(authFailure.diagnostic, /403/)
+  assert.match(authFailure.diagnostic, /authenticate/)
+  assert.match(authFailure.diagnostic, /无权访问/)
+
+  const normalError = claudeWorker.classify({
+    parsed: undefined,
+    exitCode: 1,
+    artifacts: artifactsNone,
+    raw: '普通脚本执行异常：exit 1',
+  })
+  assert.equal(normalError.stopReason, 'error')
+  assert.match(normalError.diagnostic, /普通脚本执行异常/)
 })
 
 // 7. preflight

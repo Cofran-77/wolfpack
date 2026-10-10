@@ -1,0 +1,29 @@
+name: Bug report / 问题报告
+description: Report a reproducible installation or runtime issue / 报告可复现问题
+body:
+  - type: dropdown
+    id: edition
+    attributes:
+      label: Edition / 版本
+      options: [DSH, Codex, Universal]
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment / 环境
+      description: Commit, OS, Node, host and worker CLI versions; configuration source. No secrets. / 提交、系统、Node、宿主和工人版本、配置来源；勿贴密钥。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction / 最小复现
+      description: Steps, expected and actual behavior. / 步骤、预期和实际表现。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence / 脱敏证据
+      description: Include per-check ran/exit_code and overall verdict for verification issues. / 验收问题请附每条 ran、exit_code 和总 verdict。

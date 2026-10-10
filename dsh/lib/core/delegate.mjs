@@ -12,6 +12,7 @@ import { readHealthState, updateHealthState, recordWorkerOutcome, snapshotHealth
 import { classifyFaultKind } from './worker/faults.mjs'
 import { buildAgyArgv, extractConversationId, extractDurationMs, extractUsage, mapAgyResult, parseAgyJson } from './worker/agy.mjs'
 import { createStallMonitor, appendStallRecord } from './stall-monitor.mjs'
+import { toLosslessJson } from './lossless.mjs'
 
 /**
  * 进程级活运行句柄表。按 task_id 索引。
@@ -1097,10 +1098,28 @@ export async function runDelegateTask({
   }
 
   // 2. 启动工人
+  const effectiveWorkersEnabled = config?.workersEnabled !== undefined
+    ? config.workersEnabled
+    : ((config?.agy_enabled !== undefined || config?.claude_enabled !== undefined)
+        ? (() => {
+            const agyRaw = config.agy_enabled
+            const claudeRaw = config.claude_enabled
+            const agyVal = agyRaw !== null && typeof agyRaw === 'object' && typeof agyRaw.get === 'function' ? agyRaw.get() : agyRaw
+            const claudeVal = claudeRaw !== null && typeof claudeRaw === 'object' && typeof claudeRaw.get === 'function' ? claudeRaw.get() : claudeRaw
+            const agyOn = agyVal !== undefined ? (agyVal !== false && String(agyVal).trim().toLowerCase() !== 'false') : true
+            const claudeOn = claudeVal !== undefined ? (claudeVal === true || String(claudeVal).trim().toLowerCase() === 'true') : false
+            if (agyOn && claudeOn) return undefined
+            if (agyOn) return ['agy']
+            if (claudeOn) return ['claude']
+            return []
+          })()
+        : undefined)
+
   const workerConfig = {
     ...config,
     ledger: theLedger,
     ...(args.model ? { model: args.model } : {}),
+    ...(effectiveWorkersEnabled !== undefined ? { workersEnabled: effectiveWorkersEnabled } : {}),
   }
 
   const agyRun = await startAgy({
@@ -1188,7 +1207,7 @@ export async function runDelegateTask({
     })
   }
 
-  return omitUndefined({
+  return toLosslessJson(omitUndefined({
     task_id: taskId,
     worker: runResult.worker,
     worker_reason: runResult.workerReason,
@@ -1220,5 +1239,5 @@ export async function runDelegateTask({
     health_note: runResult.all_benched === true
       ? 'all-benched'
       : (runResult.selection?.benched_ignored === true ? 'explicit-ignores-bench' : undefined),
-  })
+  }))
 }
