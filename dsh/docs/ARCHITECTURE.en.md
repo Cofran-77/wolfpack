@@ -82,7 +82,7 @@ The selected worker is fixed **for the run**: argv, parsing, classification, ses
 
 Across rounds, ownership does not imply immutable worker binding. `resolveContinuation()` receives the selected worker name and clears the old session when the previous worker differs. Explicit fresh mode, absent IDs, continuation policy, token budget, unknown-usage cap, and round limits also cause cold starts with reasons. Native resumes pass exact IDs, agy `--conversation`, Claude `--resume`; a generic spec needs an extractor before its resume capability can be useful.
 
-Worker completion and acceptance remain separate. The current verdict evaluates **executed** checks, so mixed passing checks and startup failures may yield pass. Recovery of a worker error also uses executed-check success and inherits that gap. Review registered counts and each `ran` field. Worker artifact recovery and claims reconciliation provide diagnostics, not universal proof of task correctness. Non-Git changed-file determination remains unavailable rather than falsely zero.
+Worker completion and acceptance remain separate. The current verdict evaluates **executed** checks, so mixed passing checks and startup failures may yield pass. Recovery of a worker error also uses executed-check success and inherits that gap. Review registered counts and each `ran` field. Worker artifact recovery and claims reconciliation provide diagnostics, not universal proof of task correctness. Outside Git, bounded mtime/size snapshots can detect file changes; a snapshot without a detected delta returns undetermined, not proof of no changes.
 
 ## 5. Process control and storage
 
